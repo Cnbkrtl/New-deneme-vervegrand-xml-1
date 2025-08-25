@@ -445,9 +445,22 @@ function parseXMLProductsAdvanced(xmlText) {
         title: extractCDATAValue(productXml, 'urunismi'),
         subtitle: extractCDATAValue(productXml, 'alt_baslik'),
         description: extractCDATAValue(productXml, 'detayaciklama'),
-        price: extractXMLValue(productXml, 'fiyat') || extractXMLValue(productXml, 'satisfiyati'),
-        comparePrice: extractXMLValue(productXml, 'listeFiyati'),
-        stock: extractXMLValue(productXml, 'stok_adedi') || extractXMLValue(productXml, 'stok'),
+        
+        // Fiyat bilgileri - farklı formatları dene
+        price: extractXMLValue(productXml, 'satisfiyati') || 
+               extractXMLValue(productXml, 'fiyat') || 
+               extractXMLValue(productXml, 'birimfiyat') ||
+               extractCDATAValue(productXml, 'satisfiyati'),
+               
+        comparePrice: extractXMLValue(productXml, 'listeFiyati') || 
+                     extractXMLValue(productXml, 'eskifiyat') ||
+                     extractXMLValue(productXml, 'piyasafiyati'),
+                     
+        // Stok bilgileri - farklı formatları dene  
+        stock: extractXMLValue(productXml, 'stok_adedi') || 
+               extractXMLValue(productXml, 'stok') ||
+               extractXMLValue(productXml, 'miktar') ||
+               extractXMLValue(productXml, 'adet') || '0',
         weight: extractXMLValue(productXml, 'agirlik'),
         brand: extractCDATAValue(productXml, 'marka'),
         supplier: extractCDATAValue(productXml, 'tedarikci'),
@@ -477,6 +490,18 @@ function parseXMLProductsAdvanced(xmlText) {
         product.tags = extractTags(product.categoryName, product.brand);
         
         products.push(product);
+        
+        // İlk 3 ürünün detaylarını logla
+        if (products.length <= 3) {
+          console.log(`📦 Ürün ${products.length} parse edildi:`, {
+            id: product.xmlId,
+            title: product.title?.substring(0, 50),
+            price: product.shopifyPrice,
+            stock: product.shopifyStock,
+            images: product.images?.length || 0,
+            variants: product.variants?.length || 0
+          });
+        }
       }
     } catch (error) {
       console.error(`⚠️ Ürün parse hatası (ID: ${extractXMLValue(productXml, 'id')}):`, error);
@@ -501,34 +526,65 @@ function extractCDATAValue(xml, tagName) {
   return match ? match[1].trim() : extractXMLValue(xml, tagName);
 }
 
-// Resim URL'lerini çıkar
+// Resim URL'lerini çıkar - Sentos XML formatına göre
 function extractImageUrls(productXml) {
   const images = [];
-  const imageRegex = /<resim[^>]*>(.*?)<\/resim>/gi;
-  let match;
   
-  while ((match = imageRegex.exec(productXml))) {
-    const imageUrl = match[1].trim();
-    if (imageUrl && imageUrl.startsWith('http')) {
-      images.push(imageUrl);
+  // Farklı resim tag formatlarını dene
+  const imagePatterns = [
+    /<resim[^>]*><!\[CDATA\[(.*?)\]\]><\/resim>/gi,
+    /<resim[^>]*>(.*?)<\/resim>/gi,
+    /<image[^>]*><!\[CDATA\[(.*?)\]\]><\/image>/gi,
+    /<image[^>]*>(.*?)<\/image>/gi,
+    /<foto[^>]*><!\[CDATA\[(.*?)\]\]><\/foto>/gi,
+    /<foto[^>]*>(.*?)<\/foto>/gi,
+    /<gorsel[^>]*><!\[CDATA\[(.*?)\]\]><\/gorsel>/gi,
+    /<gorsel[^>]*>(.*?)<\/gorsel>/gi
+  ];
+  
+  imagePatterns.forEach(pattern => {
+    let match;
+    while ((match = pattern.exec(productXml))) {
+      const imageUrl = match[1].trim();
+      if (imageUrl && (imageUrl.startsWith('http') || imageUrl.startsWith('//'))) {
+        // Protokol eksikse ekle
+        const finalUrl = imageUrl.startsWith('//') ? 'https:' + imageUrl : imageUrl;
+        if (!images.includes(finalUrl)) {
+          images.push(finalUrl);
+        }
+      }
     }
-  }
+  });
   
+  console.log(`🖼️ ${images.length} resim bulundu`);
   return images;
 }
 
-// Varyantları çıkar (renk, beden vb.)
+// Varyantları çıkar (renk, beden vb.) - Sentos XML formatına göre
 function extractVariants(productXml) {
   const variants = [];
   
-  // Basit varyant çıkarma - geliştirilmesi gerekebilir
-  const colorMatch = productXml.match(/<renk><!\[CDATA\[(.*?)\]\]><\/renk>/i);
-  const sizeMatch = productXml.match(/<beden><!\[CDATA\[(.*?)\]\]><\/beden>/i);
+  // Sentos XML'de varyantlar genelde aynı ürün ID'si ile farklı stok kodları olarak gelir
+  // Bu fonksiyonu daha sonra geliştireceğiz, şimdilik temel bilgileri al
   
-  if (colorMatch || sizeMatch) {
+  const variant = {
+    color: extractCDATAValue(productXml, 'renk') || extractXMLValue(productXml, 'renk'),
+    size: extractCDATAValue(productXml, 'beden') || extractXMLValue(productXml, 'beden'),
+    material: extractCDATAValue(productXml, 'malzeme') || extractXMLValue(productXml, 'malzeme'),
+    pattern: extractCDATAValue(productXml, 'desen') || extractXMLValue(productXml, 'desen')
+  };
+  
+  // En azından bir varyant özelliği varsa ekle
+  if (variant.color || variant.size || variant.material || variant.pattern) {
+    variants.push(variant);
+  }
+  
+  // Eğer hiç varyant yoksa default bir varyant oluştur
+  if (variants.length === 0) {
     variants.push({
-      color: colorMatch ? colorMatch[1] : null,
-      size: sizeMatch ? sizeMatch[1] : null
+      color: null,
+      size: null,
+      isDefault: true
     });
   }
   
@@ -664,12 +720,14 @@ async function syncProductsAdvanced(xmlProducts, shopifyProducts, config) {
     }
   });
   
-  // XML ürünlerini işle (ilk 10 ürünle test başlayalım)
-  const testProducts = xmlProducts.slice(0, 10);
+  // XML ürünlerini işle - TÜM ürünleri gönder
+  const productsToProcess = xmlProducts; // Artık tüm ürünleri işleyeceğiz
   
-  for (let i = 0; i < testProducts.length; i++) {
-    const xmlProduct = testProducts[i];
-    console.log(`🔄 İşleniyor (${i + 1}/${testProducts.length}): ${xmlProduct.title.substring(0, 50)}...`);
+  console.log(`🚀 ${productsToProcess.length} ürün işlenecek...`);
+  
+  for (let i = 0; i < productsToProcess.length; i++) {
+    const xmlProduct = productsToProcess[i];
+    console.log(`🔄 İşleniyor (${i + 1}/${productsToProcess.length}): ${xmlProduct.title.substring(0, 50)}...`);
     
     try {
       // 1. SKU ile eşleşme ara
@@ -728,8 +786,8 @@ async function syncProductsAdvanced(xmlProducts, shopifyProducts, config) {
         }
       }
       
-      // Rate limiting için bekle
-      await new Promise(resolve => setTimeout(resolve, 500));
+      // Rate limiting için bekle (Shopify API limitlerine uygun)
+      await new Promise(resolve => setTimeout(resolve, 300));
       
     } catch (error) {
       results.errors.push(`${xmlProduct.title}: ${error.message}`);
@@ -815,6 +873,43 @@ async function updateShopifyProductAdvanced(shopifyProduct, xmlProduct, config) 
 // Gelişmiş Shopify ürün oluşturma
 async function createShopifyProductAdvanced(xmlProduct, config) {
   try {
+    console.log(`🆕 Yeni ürün oluşturuluyor: ${xmlProduct.title.substring(0, 30)}...`);
+    
+    // Varyantları hazırla
+    const variants = [];
+    
+    if (xmlProduct.variants && xmlProduct.variants.length > 0) {
+      // XML'den gelen varyantları işle
+      xmlProduct.variants.forEach((variant, index) => {
+        variants.push({
+          price: xmlProduct.shopifyPrice || '0.00',
+          compare_at_price: xmlProduct.shopifyComparePrice,
+          sku: xmlProduct.sku + (index > 0 ? `-${index}` : ''),
+          inventory_quantity: Math.floor(xmlProduct.shopifyStock / xmlProduct.variants.length), // Stoku varyantlara böl
+          weight: xmlProduct.shopifyWeight,
+          weight_unit: 'kg',
+          inventory_management: 'shopify',
+          inventory_policy: 'deny',
+          option1: variant.color || 'Standart',
+          option2: variant.size,
+          option3: variant.material
+        });
+      });
+    } else {
+      // Default varyant
+      variants.push({
+        price: xmlProduct.shopifyPrice || '0.00',
+        compare_at_price: xmlProduct.shopifyComparePrice,
+        sku: xmlProduct.sku,
+        inventory_quantity: xmlProduct.shopifyStock,
+        weight: xmlProduct.shopifyWeight,
+        weight_unit: 'kg',
+        inventory_management: 'shopify',
+        inventory_policy: 'deny'
+      });
+    }
+    
+    // Ürün verisini hazırla
     const productData = {
       product: {
         title: xmlProduct.shopifyTitle,
@@ -822,20 +917,29 @@ async function createShopifyProductAdvanced(xmlProduct, config) {
         vendor: xmlProduct.brand || 'XML Import',
         product_type: xmlProduct.productType,
         tags: xmlProduct.tags ? xmlProduct.tags.join(',') : '',
-        variants: [{
-          price: xmlProduct.shopifyPrice || '0.00',
-          compare_at_price: xmlProduct.shopifyComparePrice,
-          sku: xmlProduct.sku,
-          inventory_quantity: xmlProduct.shopifyStock,
-          weight: xmlProduct.shopifyWeight,
-          weight_unit: 'kg',
-          inventory_management: 'shopify',
-          inventory_policy: 'deny'
-        }],
+        variants: variants,
         images: xmlProduct.images && xmlProduct.images.length > 0 ? 
           xmlProduct.images.map(url => ({ src: url })) : []
       }
     };
+    
+    // Varyant seçeneklerini ayarla
+    if (xmlProduct.variants && xmlProduct.variants.length > 0) {
+      const hasColor = xmlProduct.variants.some(v => v.color);
+      const hasSize = xmlProduct.variants.some(v => v.size);
+      const hasMaterial = xmlProduct.variants.some(v => v.material);
+      
+      const options = [];
+      if (hasColor) options.push({ name: 'Renk', position: 1 });
+      if (hasSize) options.push({ name: 'Beden', position: 2 });
+      if (hasMaterial) options.push({ name: 'Malzeme', position: 3 });
+      
+      if (options.length > 0) {
+        productData.product.options = options;
+      }
+    }
+    
+    console.log(`📦 ${variants.length} varyant, ${productData.product.images.length} resim ile ürün oluşturuluyor...`);
     
     const url = `https://${config.storeUrl}/admin/api/2023-10/products.json`;
     const response = await fetch(url, {
@@ -849,13 +953,16 @@ async function createShopifyProductAdvanced(xmlProduct, config) {
     
     if (!response.ok) {
       const errorData = await response.json();
+      console.error('❌ Shopify oluşturma hatası:', errorData);
       throw new Error(`Shopify oluşturma hatası: ${JSON.stringify(errorData)}`);
     }
     
     const result = await response.json();
+    console.log(`✅ Ürün oluşturuldu - Shopify ID: ${result.product.id}`);
     return { success: true, productId: result.product.id };
     
   } catch (error) {
+    console.error(`❌ Ürün oluşturma hatası: ${xmlProduct.title}`, error);
     return { success: false, error: error.message };
   }
 }
