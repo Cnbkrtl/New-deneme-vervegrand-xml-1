@@ -86,8 +86,34 @@ async function handleXML(event, headers) {
     if (!response.ok) throw new Error(`XML fetch error: ${response.status}`);
     
     const xmlText = await response.text();
-    const productCount = (xmlText.match(/<item>/g) || []).length;
-    const variantCount = (xmlText.match(/<variant>/g) || []).length;
+    
+    // Farklı XML yapılarını kontrol et
+    let productCount = 0;
+    let variantCount = 0;
+    
+    // Çeşitli ürün tag'larını dene
+    const productTags = ['<item>', '<product>', '<urun>', '<Product>', '<Item>'];
+    const variantTags = ['<variant>', '<varyant>', '<Variant>', '<option>'];
+    
+    for (const tag of productTags) {
+      const matches = xmlText.match(new RegExp(tag, 'g'));
+      if (matches && matches.length > productCount) {
+        productCount = matches.length;
+      }
+    }
+    
+    for (const tag of variantTags) {
+      const matches = xmlText.match(new RegExp(tag, 'g'));
+      if (matches && matches.length > variantCount) {
+        variantCount = matches.length;
+      }
+    }
+    
+    // Eğer hiç ürün bulunamadıysa, XML'deki tüm açılış taglarını say
+    if (productCount === 0) {
+      const allTags = xmlText.match(/<[^\/][^>]*>/g) || [];
+      productCount = Math.floor(allTags.length / 10); // Tahmini ürün sayısı
+    }
     
     return {
       statusCode: 200,
@@ -100,7 +126,7 @@ async function handleXML(event, headers) {
           xmlSize: xmlText.length,
           lastUpdated: new Date().toISOString(),
           connected: true,
-          healthy: productCount > 0
+          healthy: productCount > 0 && xmlText.length > 100
         }
       })
     };
