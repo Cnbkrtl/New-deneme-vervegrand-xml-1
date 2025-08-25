@@ -71,13 +71,35 @@ const Dashboard = () => {
     setSyncDetails(null);
     
     try {
-      // API bilgilerini localStorage'dan al
+      // API bilgilerini localStorage'dan al ve kontrol et
+      const xmlUrl = localStorage.getItem('xml_url');
+      const storeUrl = localStorage.getItem('shopify_store_url');
+      const accessToken = localStorage.getItem('shopify_access_token');
+      const apiKey = localStorage.getItem('shopify_api_key');
+      
+      console.log('📥 Sync Request Data:', {
+        xmlUrl: xmlUrl ? 'OK' : 'MISSING',
+        storeUrl: storeUrl ? 'OK' : 'MISSING',
+        accessToken: accessToken ? 'OK' : 'MISSING',
+        apiKey: apiKey ? 'OK' : 'MISSING'
+      });
+      
+      // Gerekli bilgileri kontrol et
+      if (!xmlUrl) {
+        throw new Error('XML URL ayarlanmamış. Lütfen Settings sayfasından XML URL\'ini girin.');
+      }
+      if (!storeUrl || !accessToken) {
+        throw new Error('Shopify API bilgileri eksik. Lütfen Settings sayfasından Shopify ayarlarını tamamlayın.');
+      }
+      
       const syncRequest = {
-        xmlUrl: localStorage.getItem('xml_url'),
-        storeUrl: localStorage.getItem('shopify_store_url'),
-        accessToken: localStorage.getItem('shopify_access_token'),
-        apiKey: localStorage.getItem('shopify_api_key')
+        xmlUrl,
+        storeUrl,
+        accessToken,
+        apiKey
       };
+      
+      console.log('🚀 Senkronizasyon isteği gönderiliyor...');
       
       const response = await fetch('/api/sync', {
         method: 'POST',
@@ -85,7 +107,13 @@ const Dashboard = () => {
         body: JSON.stringify(syncRequest)
       });
       
-      if (!response.ok) throw new Error('Sync failed');
+      console.log('📡 Response status:', response.status);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error('❌ Sync response error:', errorText);
+        throw new Error(`Sync failed (${response.status}): ${errorText}`);
+      }
       const data = await response.json();
       
       setSyncStatus('completed');

@@ -330,17 +330,34 @@ async function handleSync(event, headers) {
   }
   
   try {
-    // API bilgilerini localStorage'dan al (body'den gelen veriler)
-    const requestBody = JSON.parse(event.body);
+    // API bilgilerini request body'den al
+    let requestBody;
+    try {
+      requestBody = JSON.parse(event.body || '{}');
+    } catch (parseError) {
+      throw new Error('Invalid JSON in request body: ' + parseError.message);
+    }
     
-    const xmlUrl = requestBody.xmlUrl || localStorage.getItem('xml_url');
+    console.log('📥 Sync request body:', requestBody);
+    
+    // Gerekli parametreleri kontrol et
+    if (!requestBody.xmlUrl) {
+      throw new Error('XML URL gerekli');
+    }
+    if (!requestBody.storeUrl || !requestBody.accessToken) {
+      throw new Error('Shopify API bilgileri eksik');
+    }
+    
+    const xmlUrl = requestBody.xmlUrl;
     const shopifyConfig = {
-      storeUrl: requestBody.storeUrl || localStorage.getItem('shopify_store_url'),
-      accessToken: requestBody.accessToken || localStorage.getItem('shopify_access_token'),
-      apiKey: requestBody.apiKey || localStorage.getItem('shopify_api_key')
+      storeUrl: requestBody.storeUrl,
+      accessToken: requestBody.accessToken,
+      apiKey: requestBody.apiKey
     };
     
     console.log('🚀 Senkronizasyon başladı...');
+    console.log(`📄 XML URL: ${xmlUrl}`);
+    console.log(`🏪 Store URL: ${shopifyConfig.storeUrl}`);
     const syncStartTime = Date.now();
     
     // 1. XML'i çek ve analiz et
@@ -396,7 +413,8 @@ async function handleSync(event, headers) {
       body: JSON.stringify({ 
         status: 'error', 
         error: error.message,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        details: error.stack
       })
     };
   }
