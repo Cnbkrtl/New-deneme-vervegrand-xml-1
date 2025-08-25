@@ -19,7 +19,31 @@ const Dashboard = () => {
     const testEndpoint = async (endpoint, key) => {
       setConnectionStatus(prev => ({ ...prev, [key]: { status: 'testing', data: {} } }));
       try {
-        const response = await fetch(`/api/${endpoint}`);
+        let body = {};
+        
+        if (key === 'shopify') {
+          body = {
+            apiKey: localStorage.getItem('shopify_api_key'),
+            apiSecret: localStorage.getItem('shopify_api_secret'),
+            storeUrl: localStorage.getItem('shopify_store_url'),
+            accessToken: localStorage.getItem('shopify_access_token')
+          };
+        } else if (key === 'xml') {
+          body = { xmlUrl: localStorage.getItem('xml_url') };
+        } else if (key === 'google') {
+          body = {
+            clientId: localStorage.getItem('google_client_id'),
+            apiKey: localStorage.getItem('google_api_key'),
+            spreadsheetId: localStorage.getItem('google_spreadsheet_id')
+          };
+        }
+
+        const response = await fetch(`/api/${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        
         if (!response.ok) throw new Error('Network response was not ok');
         const data = await response.json();
         setConnectionStatus(prev => ({ ...prev, [key]: { status: 'connected', data } }));
@@ -39,11 +63,22 @@ const Dashboard = () => {
   const startSync = async () => {
     setSyncStatus('running');
     
-    // Simulate sync process
-    setTimeout(() => {
+    try {
+      const response = await fetch('/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      });
+      
+      if (!response.ok) throw new Error('Sync failed');
+      const data = await response.json();
+      
       setSyncStatus('completed');
-      alert('Senkronizasyon tamamlandı! 142 ürün güncellendi, 14 yeni ürün eklendi.');
-    }, 5000);
+      alert(`Senkronizasyon tamamlandı! ${data.data.productsUpdated} ürün güncellendi, ${data.data.productsCreated} yeni ürün eklendi.`);
+    } catch (error) {
+      setSyncStatus('failed');
+      alert('Senkronizasyon başarısız oldu: ' + error.message);
+    }
   };
 
   useEffect(() => {
@@ -169,10 +204,10 @@ const Dashboard = () => {
           </div>
         )}
         
-        {syncStatus === 'completed' && (
+        {syncStatus === 'failed' && (
           <div>
-            <button onClick={() => setSyncStatus('idle')} className="btn btn-success">
-              ✅ Senkronizasyon Tamamlandı - Yeniden Başlat
+            <button onClick={() => setSyncStatus('idle')} className="btn btn-danger">
+              ❌ Senkronizasyon Başarısız - Tekrar Dene
             </button>
           </div>
         )}

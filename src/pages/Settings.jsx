@@ -239,6 +239,12 @@ const Settings = () => {
           </button>
         </div>
       </div>
+
+      <div style={{marginTop: '20px', textAlign: 'center'}}>
+        <Link to="/" className="btn">
+          ← Ana Panele Dön
+        </Link>
+      </div>
     </div>
   );
 };
