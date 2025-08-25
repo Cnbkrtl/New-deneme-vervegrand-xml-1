@@ -10,6 +10,7 @@ const Dashboard = () => {
   });
   const [syncStatus, setSyncStatus] = useState('idle');
   const [syncDetails, setSyncDetails] = useState(null);
+  const [fastMode, setFastMode] = useState(false);
 
   // Sayfa yüklendiğinde otomatik bağlantı testi yap
   useEffect(() => {
@@ -50,7 +51,7 @@ const Dashboard = () => {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
         
-        const response = await fetch(`/api/${endpoint}`, {
+        const response = await fetch(`/api${fastMode && key === 'xml' ? '-chunked' : ''}/${endpoint}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
@@ -87,7 +88,7 @@ const Dashboard = () => {
 
     await Promise.all([
       testEndpoint('shopify', 'shopify'),
-      testEndpoint('xml', 'xml'),
+      testEndpoint('xml', fastMode ? 'xml-fast' : 'xml'),
       testEndpoint('google', 'google')
     ]);
   };
@@ -418,6 +419,21 @@ const Dashboard = () => {
             <li>Ürün görselleri</li>
             <li>Etiketler ve kategoriler</li>
           </ul>
+        </div>
+
+        <div className="mb-4">
+          <div className="form-check">
+            <input 
+              className="form-check-input" 
+              type="checkbox" 
+              id="fastMode"
+              checked={fastMode}
+              onChange={(e) => setFastMode(e.target.checked)}
+            />
+            <label className="form-check-label" htmlFor="fastMode">
+              ⚡ Hızlı Mod (Büyük XML dosyaları için - sadece ilk 100KB analizi)
+            </label>
+          </div>
         </div>
 
         {syncStatus === 'idle' && (
