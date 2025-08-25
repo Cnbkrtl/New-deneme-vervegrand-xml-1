@@ -3,6 +3,10 @@
   functions = "netlify/functions"
   publish = "dist"
 
+[functions]
+  node_bundler = "esbuild"
+  timeout = 300
+
 [[redirects]]
   from = "/api/*"
   to = "/.netlify/functions/api"

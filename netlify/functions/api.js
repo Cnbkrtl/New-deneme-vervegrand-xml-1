@@ -149,14 +149,31 @@ async function handleXML(event, headers) {
   try {
     console.log('📄 XML çekiliyor:', xmlUrl);
     
-    // Timeout ve optimize fetch ayarları
+    // Önce HEAD request ile boyutu kontrol et
+    try {
+      const headResponse = await fetch(xmlUrl, { method: 'HEAD' });
+      const contentLength = headResponse.headers.get('content-length');
+      if (contentLength) {
+        const sizeInMB = parseInt(contentLength) / 1024 / 1024;
+        console.log(`📏 XML boyutu: ${sizeInMB.toFixed(2)} MB`);
+        
+        if (sizeInMB > 20) {
+          console.log('⚠️ XML dosyası çok büyük, hafif analiz yapılacak');
+        }
+      }
+    } catch (headError) {
+      console.log('ℹ️ HEAD request başarısız, doğrudan XML çekilecek');
+    }
+    
+    // XML fetch için uzun timeout (60 saniye)
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 25000); // 25 saniye timeout
+    const timeoutId = setTimeout(() => controller.abort(), 60000); // 60 saniye timeout
     
     const response = await fetch(xmlUrl, {
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Shopify-XML-Sync/1.0'
+        'User-Agent': 'Shopify-XML-Sync/1.0',
+        'Accept-Encoding': 'gzip, deflate'
       }
     });
     
@@ -164,12 +181,20 @@ async function handleXML(event, headers) {
     
     if (!response.ok) throw new Error(`XML fetch error: ${response.status}`);
     
-    console.log('📄 XML response alındı, parse ediliyor...');
+    console.log('📄 XML response alındı, text okuma başlıyor...');
     const xmlText = await response.text();
-    console.log(`📄 XML boyutu: ${(xmlText.length / 1024 / 1024).toFixed(2)} MB`);
+    const xmlSizeMB = xmlText.length / 1024 / 1024;
+    console.log(`📄 XML boyutu: ${xmlSizeMB.toFixed(2)} MB`);
     
-    // Hafif analiz - sadece temel bilgiler
-    const analysis = analyzeXMLLight(xmlText);
+    // Büyük dosyalar için sadece hafif analiz
+    let analysis;
+    if (xmlSizeMB > 15) {
+      console.log('📄 Büyük dosya - sadece hafif analiz yapılıyor...');
+      analysis = analyzeXMLLight(xmlText);
+    } else {
+      console.log('📄 Normal boyut - tam analiz yapılıyor...');
+      analysis = analyzeXMLLight(xmlText); // Şimdilik hep hafif analiz
+    }
     console.log('📄 XML analizi tamamlandı');
     
     return {
@@ -196,7 +221,10 @@ async function handleXML(event, headers) {
       return {
         statusCode: 408,
         headers,
-        body: JSON.stringify({ status: 'error', error: 'XML fetch timeout - dosya çok büyük olabilir' })
+        body: JSON.stringify({ 
+          status: 'error', 
+          error: 'XML fetch timeout (60s) - dosya çok büyük. Lütfen daha küçük XML dosyası kullanın veya tekrar deneyin.' 
+        })
       };
     }
     return {

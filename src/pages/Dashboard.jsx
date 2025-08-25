@@ -45,7 +45,7 @@ const Dashboard = () => {
         }
 
         // XML için özel timeout ayarı
-        const timeoutMs = key === 'xml' ? 30000 : 10000; // XML için 30 saniye
+        const timeoutMs = key === 'xml' ? 60000 : 10000; // XML için 60 saniye
         
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
