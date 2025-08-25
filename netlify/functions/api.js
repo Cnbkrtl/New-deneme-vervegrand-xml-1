@@ -87,33 +87,8 @@ async function handleXML(event, headers) {
     
     const xmlText = await response.text();
     
-    // Farklı XML yapılarını kontrol et
-    let productCount = 0;
-    let variantCount = 0;
-    
-    // Çeşitli ürün tag'larını dene
-    const productTags = ['<item>', '<product>', '<urun>', '<Product>', '<Item>'];
-    const variantTags = ['<variant>', '<varyant>', '<Variant>', '<option>'];
-    
-    for (const tag of productTags) {
-      const matches = xmlText.match(new RegExp(tag, 'g'));
-      if (matches && matches.length > productCount) {
-        productCount = matches.length;
-      }
-    }
-    
-    for (const tag of variantTags) {
-      const matches = xmlText.match(new RegExp(tag, 'g'));
-      if (matches && matches.length > variantCount) {
-        variantCount = matches.length;
-      }
-    }
-    
-    // Eğer hiç ürün bulunamadıysa, XML'deki tüm açılış taglarını say
-    if (productCount === 0) {
-      const allTags = xmlText.match(/<[^\/][^>]*>/g) || [];
-      productCount = Math.floor(allTags.length / 10); // Tahmini ürün sayısı
-    }
+    // XML analizi - gerçek ürün sayısını bul
+    const analysis = analyzeXML(xmlText);
     
     return {
       statusCode: 200,
@@ -121,12 +96,13 @@ async function handleXML(event, headers) {
       body: JSON.stringify({ 
         status: 'success', 
         data: {
-          productCount: productCount,
-          variantCount: variantCount,
+          productCount: analysis.products,
+          variantCount: analysis.variants,
           xmlSize: xmlText.length,
           lastUpdated: new Date().toISOString(),
           connected: true,
-          healthy: productCount > 0 && xmlText.length > 100
+          healthy: analysis.products > 0,
+          structure: analysis.structure
         }
       })
     };
@@ -137,6 +113,38 @@ async function handleXML(event, headers) {
       body: JSON.stringify({ status: 'error', error: error.message })
     };
   }
+}
+
+// XML analiz fonksiyonu
+function analyzeXML(xmlText) {
+  // Sentos XML yapısı analizi
+  const productPatterns = [
+    /<urun[^>]*>/gi,           // <urun> tagları
+    /<product[^>]*>/gi,        // <product> tagları  
+    /<item[^>]*>/gi,           // <item> tagları
+    /<goods[^>]*>/gi           // <goods> tagları
+  ];
+  
+  let maxProducts = 0;
+  let detectedStructure = 'unknown';
+  
+  for (const pattern of productPatterns) {
+    const matches = xmlText.match(pattern) || [];
+    if (matches.length > maxProducts) {
+      maxProducts = matches.length;
+      detectedStructure = pattern.source.replace(/[<>[\]\\^$.*+?(){}|gi]/g, '');
+    }
+  }
+  
+  // Varyant analizi
+  const variantCount = (xmlText.match(/<varyant[^>]*>/gi) || []).length + 
+                      (xmlText.match(/<variant[^>]*>/gi) || []).length;
+  
+  return {
+    products: maxProducts,
+    variants: variantCount,
+    structure: detectedStructure
+  };
 }
 
 async function handleGoogle(event, headers) {
@@ -181,20 +189,40 @@ async function handleSync(event, headers) {
   }
   
   try {
-    const response = {
-      status: 'success',
-      data: {
-        productsProcessed: 142,
-        productsUpdated: 128,
-        productsCreated: 14,
-        variantsUpdated: 298,
-        inventoryUpdated: 1156
-      }
+    // Ayarları localStorage'dan al (gerçek implementasyonda body'den gelir)
+    const xmlUrl = 'https://stildiva.sentos.com.tr/xml-sentos-out/1'; // Örnek
+    const shopifyConfig = {
+      storeUrl: 'c1grp2-yr.myshopify.com',
+      accessToken: 'şifre' // Gerçek token gerekli
     };
+    
+    // 1. XML'i çek ve analiz et
+    const xmlResponse = await fetch(xmlUrl);
+    const xmlText = await xmlResponse.text();
+    const xmlAnalysis = analyzeXML(xmlText);
+    
+    // 2. XML'den ürün verilerini çıkar
+    const xmlProducts = parseXMLProducts(xmlText);
+    
+    // 3. Shopify'daki mevcut ürünleri kontrol et
+    const shopifyProducts = await getShopifyProducts(shopifyConfig);
+    
+    // 4. Senkronizasyon işlemini yap
+    const syncResults = await syncProducts(xmlProducts, shopifyProducts, shopifyConfig);
+    
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify(response)
+      body: JSON.stringify({
+        status: 'success',
+        data: {
+          xmlProductsFound: xmlAnalysis.products,
+          shopifyProductsExisting: shopifyProducts.length,
+          productsUpdated: syncResults.updated,
+          productsCreated: syncResults.created,
+          errors: syncResults.errors
+        }
+      })
     };
   } catch (error) {
     return {
@@ -203,4 +231,118 @@ async function handleSync(event, headers) {
       body: JSON.stringify({ status: 'error', error: error.message })
     };
   }
+}
+
+// XML'den ürün bilgilerini çıkar
+function parseXMLProducts(xmlText) {
+  const products = [];
+  // Basit regex ile ürün bilgilerini çıkar
+  const productMatches = xmlText.match(/<urun[^>]*>[\s\S]*?<\/urun>/gi) || [];
+  
+  productMatches.forEach(productXML => {
+    const product = {
+      id: extractValue(productXML, 'id'),
+      title: extractValue(productXML, 'baslik') || extractValue(productXML, 'name'),
+      price: extractValue(productXML, 'fiyat') || extractValue(productXML, 'price'),
+      stock: extractValue(productXML, 'stok') || extractValue(productXML, 'stock'),
+      description: extractValue(productXML, 'aciklama') || extractValue(productXML, 'description')
+    };
+    if (product.id && product.title) {
+      products.push(product);
+    }
+  });
+  
+  return products;
+}
+
+// XML'den değer çıkar
+function extractValue(xml, tagName) {
+  const regex = new RegExp(`<${tagName}[^>]*>([^<]*)<\/${tagName}>`, 'i');
+  const match = xml.match(regex);
+  return match ? match[1].trim() : null;
+}
+
+// Shopify'dan ürünleri çek
+async function getShopifyProducts(config) {
+  const url = `https://${config.storeUrl}/admin/api/2023-01/products.json?limit=250`;
+  const response = await fetch(url, {
+    headers: { 'X-Shopify-Access-Token': config.accessToken }
+  });
+  const data = await response.json();
+  return data.products || [];
+}
+
+// Ürün senkronizasyonu
+async function syncProducts(xmlProducts, shopifyProducts, config) {
+  const results = { updated: 0, created: 0, errors: [] };
+  
+  for (const xmlProduct of xmlProducts.slice(0, 5)) { // İlk 5 ürünle test
+    try {
+      const existingProduct = shopifyProducts.find(p => p.title === xmlProduct.title);
+      
+      if (existingProduct) {
+        // Mevcut ürünü güncelle
+        await updateShopifyProduct(existingProduct.id, xmlProduct, config);
+        results.updated++;
+      } else {
+        // Yeni ürün oluştur
+        await createShopifyProduct(xmlProduct, config);
+        results.created++;
+      }
+    } catch (error) {
+      results.errors.push(`${xmlProduct.title}: ${error.message}`);
+    }
+  }
+  
+  return results;
+}
+
+// Shopify ürün güncelle
+async function updateShopifyProduct(productId, xmlProduct, config) {
+  const url = `https://${config.storeUrl}/admin/api/2023-01/products/${productId}.json`;
+  const updateData = {
+    product: {
+      id: productId,
+      variants: [{
+        price: xmlProduct.price,
+        inventory_quantity: parseInt(xmlProduct.stock) || 0
+      }]
+    }
+  };
+  
+  await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'X-Shopify-Access-Token': config.accessToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(updateData)
+  });
+}
+
+// Shopify'da yeni ürün oluştur
+async function createShopifyProduct(xmlProduct, config) {
+  const url = `https://${config.storeUrl}/admin/api/2023-01/products.json`;
+  const productData = {
+    product: {
+      title: xmlProduct.title,
+      body_html: xmlProduct.description,
+      vendor: 'XML Import',
+      product_type: 'General',
+      variants: [{
+        price: xmlProduct.price,
+        inventory_quantity: parseInt(xmlProduct.stock) || 0,
+        inventory_management: 'shopify'
+      }]
+    }
+  };
+  
+  await fetch(url, {
+    method: 'POST',
+    headers: {
+      'X-Shopify-Access-Token': config.accessToken,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(productData)
+  });
 }
