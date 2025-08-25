@@ -128,11 +128,14 @@ const Dashboard = () => {
       
       console.log('🚀 Senkronizasyon isteği gönderiliyor...');
       
-      // Sync için uzun timeout (90 saniye)
+      // Sync için chunked API kullan (daha hızlı)
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
       
-      const response = await fetch('/api/sync', {
+      const syncEndpoint = fastMode ? '/api-chunked/sync-batch' : '/api/sync';
+      console.log(`🎯 Sync endpoint: ${syncEndpoint}`);
+      
+      const response = await fetch(syncEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(syncRequest),
@@ -193,17 +196,20 @@ const Dashboard = () => {
       let errorDetails = '';
       
       if (error.name === 'AbortError') {
-        errorMessage = 'Senkronizasyon zaman aşımına uğradı (90 saniye)';
+        errorMessage = fastMode ? 
+          'Hızlı mod sync zaman aşımına uğradı (60 saniye)' :
+          'Senkronizasyon zaman aşımına uğradı (60 saniye)';
         errorDetails = `
 🚨 Zaman Aşımı Sorunu:
-• XML dosyası çok büyük veya yavaş indiriliyor
+• ${fastMode ? 'Hızlı mod bile timeout aldı - XML çok büyük' : 'XML dosyası çok büyük veya yavaş indiriliyor'}
 • Shopify API çok yavaş yanıt veriyor
 • İnternet bağlantısı yavaş
 
 💡 Çözüm Önerileri:
-• Daha az ürünle test yapın (5-10 ürün)
-• İnternet bağlantınızı kontrol edin
-• Tekrar deneyin
+${fastMode ? 
+  '• Daha küçük XML dosyası kullanın\n• XML\'i optimize edin\n• Tekrar deneyin' :
+  '• Hızlı Modu aktifleştirin\n• Daha az ürünle test yapın (3-5 ürün)\n• İnternet bağlantınızı kontrol edin'
+}
         `;
       } else if (error.message.includes('504') || error.message.includes('Gateway Timeout')) {
         errorMessage = 'Sunucu zaman aşımı (504 Gateway Timeout)';
@@ -431,7 +437,7 @@ const Dashboard = () => {
               onChange={(e) => setFastMode(e.target.checked)}
             />
             <label className="form-check-label" htmlFor="fastMode">
-              ⚡ Hızlı Mod (Büyük XML dosyaları için - sadece ilk 100KB analizi)
+              ⚡ Hızlı Mod (Büyük XML dosyaları için - sadece ilk 3 ürün sync'i, 15 saniye timeout)
             </label>
           </div>
         </div>
