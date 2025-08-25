@@ -51,167 +51,57 @@ const Settings = () => {
     setTimeout(() => setSaveStatus(''), 3000);
   };
 
+  // Test durumları
+  const [testStatus, setTestStatus] = useState({
+    shopify: 'idle', // idle | loading | success | error
+    xml: 'idle',
+    google: 'idle'
+  });
+
+  // Test fonksiyonu
+  const handleTest = async (type) => {
+    setTestStatus(prev => ({ ...prev, [type]: 'loading' }));
+    let endpoint = '';
+    if (type === 'shopify') endpoint = '/api/shopify';
+    if (type === 'xml') endpoint = '/api/xml';
+    if (type === 'google') endpoint = '/api/google';
+    try {
+      const response = await fetch(endpoint);
+      if (!response.ok) throw new Error('Network response was not ok');
+      setTestStatus(prev => ({ ...prev, [type]: 'success' }));
+    } catch (err) {
+      setTestStatus(prev => ({ ...prev, [type]: 'error' }));
+    }
+    setTimeout(() => setTestStatus(prev => ({ ...prev, [type]: 'idle' })), 2500);
+  };
+
+  // İkon render
+  const renderTestIcon = (status) => {
+    if (status === 'loading') return <span className="spinner" style={{marginLeft: 8}}></span>;
+    if (status === 'success') return <span style={{color: 'green', marginLeft: 8}}>✓</span>;
+    if (status === 'error') return <span style={{color: 'red', marginLeft: 8}}>✗</span>;
+    return null;
+  };
+
   return (
     <div className="container">
-      <div className="nav">
-        <h1 className="text-xl" style={{color: 'white', margin: 0}}>⚙️ Ayarlar</h1>
-        <div style={{marginLeft: 'auto'}}>
-          <Link to="/">🏠 Ana Panel</Link>
-        </div>
-      </div>
-
-      {saveStatus && (
-        <div className="card" style={{background: '#d1fae5', border: '1px solid #10b981'}}>
-          <p style={{color: '#065f46', margin: 0}}>✅ {saveStatus}</p>
-        </div>
-      )}
-
-      {/* Shopify API Settings */}
-      <div className="card">
-        <h2 className="text-lg mb-6">🛍️ Shopify API Ayarları</h2>
-        <form onSubmit={handleShopifySubmit}>
-          <div className="grid grid-2">
-            <div>
-              <label style={{display: 'block', marginBottom: '4px', fontWeight: '500'}}>API Key</label>
-              <input
-                type="text"
-                value={shopifySettings.apiKey}
-                onChange={(e) => setShopifySettings({...shopifySettings, apiKey: e.target.value})}
-                placeholder="Shopify API Key"
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{display: 'block', marginBottom: '4px', fontWeight: '500'}}>API Secret</label>
-              <input
-                type="password"
-                value={shopifySettings.apiSecret}
-                onChange={(e) => setShopifySettings({...shopifySettings, apiSecret: e.target.value})}
-                placeholder="Shopify API Secret"
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{display: 'block', marginBottom: '4px', fontWeight: '500'}}>Store URL</label>
-              <input
-                type="text"
-                value={shopifySettings.storeUrl}
-                onChange={(e) => setShopifySettings({...shopifySettings, storeUrl: e.target.value})}
-                placeholder="your-store.myshopify.com"
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{display: 'block', marginBottom: '4px', fontWeight: '500'}}>Access Token</label>
-              <input
-                type="password"
-                value={shopifySettings.accessToken}
-                onChange={(e) => setShopifySettings({...shopifySettings, accessToken: e.target.value})}
-                placeholder="Shopify Access Token"
-                className="input"
-              />
-            </div>
-          </div>
-          <button type="submit" className="btn">
-            💾 Shopify Ayarlarını Kaydet
-          </button>
-        </form>
-        
-        <div style={{marginTop: '20px', padding: '12px', background: '#f3f4f6', borderRadius: '8px', fontSize: '14px'}}>
-          <strong>ℹ️ Bilgi:</strong> Shopify Admin panelinden Private App oluşturarak API bilgilerinizi alabilirsiniz.
-        </div>
-      </div>
-
-      {/* XML Connection Settings */}
-      <div className="card">
-        <h2 className="text-lg mb-6">📄 XML Bağlantı Ayarları</h2>
-        <form onSubmit={handleXmlSubmit}>
-          <label style={{display: 'block', marginBottom: '4px', fontWeight: '500'}}>XML URL</label>
-          <input
-            type="url"
-            value={xmlSettings.xmlUrl}
-            onChange={(e) => setXmlSettings({...xmlSettings, xmlUrl: e.target.value})}
-            placeholder="https://example.com/products.xml"
-            className="input"
-          />
-          <button type="submit" className="btn">
-            💾 XML Ayarlarını Kaydet
-          </button>
-        </form>
-        
-        <div style={{marginTop: '20px', padding: '12px', background: '#f3f4f6', borderRadius: '8px', fontSize: '14px'}}>
-          <strong>ℹ️ Bilgi:</strong> Sentos XML formatında ürün verilerinizin bulunduğu URL'yi girin.
-        </div>
-      </div>
-
-      {/* Google API Settings */}
-      <div className="card">
-        <h2 className="text-lg mb-6">📊 Google API Ayarları</h2>
-        <form onSubmit={handleGoogleSubmit}>
-          <div className="grid grid-2">
-            <div>
-              <label style={{display: 'block', marginBottom: '4px', fontWeight: '500'}}>Client ID</label>
-              <input
-                type="text"
-                value={googleSettings.clientId}
-                onChange={(e) => setGoogleSettings({...googleSettings, clientId: e.target.value})}
-                placeholder="Google Client ID"
-                className="input"
-              />
-            </div>
-            <div>
-              <label style={{display: 'block', marginBottom: '4px', fontWeight: '500'}}>API Key</label>
-              <input
-                type="password"
-                value={googleSettings.apiKey}
-                onChange={(e) => setGoogleSettings({...googleSettings, apiKey: e.target.value})}
-                placeholder="Google API Key"
-                className="input"
-              />
-            </div>
-          </div>
-          <label style={{display: 'block', marginBottom: '4px', fontWeight: '500'}}>Spreadsheet ID</label>
-          <input
-            type="text"
-            value={googleSettings.spreadsheetId}
-            onChange={(e) => setGoogleSettings({...googleSettings, spreadsheetId: e.target.value})}
-            placeholder="Google Sheets Spreadsheet ID"
-            className="input"
-          />
-          <button type="submit" className="btn">
-            💾 Google Ayarlarını Kaydet
-          </button>
-        </form>
-        
-        <div style={{marginTop: '20px', padding: '12px', background: '#f3f4f6', borderRadius: '8px', fontSize: '14px'}}>
-          <strong>ℹ️ Bilgi:</strong> Google Cloud Console'dan API credentials oluşturarak bilgilerinizi alabilirsiniz.
-        </div>
-      </div>
-
+      {/* ...existing code... */}
       {/* Test Connections */}
       <div className="card">
         <h2 className="text-lg mb-6">🔧 Bağlantı Testleri</h2>
         <div className="grid grid-3">
-          <button 
-            className="btn" 
-            onClick={() => alert('Shopify bağlantısı test ediliyor...')}
-          >
-            🛍️ Shopify Test Et
+          <button className="btn" onClick={() => handleTest('shopify')} disabled={testStatus.shopify === 'loading'}>
+            🛍️ Shopify Test Et {renderTestIcon(testStatus.shopify)}
           </button>
-          <button 
-            className="btn" 
-            onClick={() => alert('XML bağlantısı test ediliyor...')}
-          >
-            📄 XML Test Et
+          <button className="btn" onClick={() => handleTest('xml')} disabled={testStatus.xml === 'loading'}>
+            📄 XML Test Et {renderTestIcon(testStatus.xml)}
           </button>
-          <button 
-            className="btn" 
-            onClick={() => alert('Google bağlantısı test ediliyor...')}
-          >
-            📊 Google Test Et
+          <button className="btn" onClick={() => handleTest('google')} disabled={testStatus.google === 'loading'}>
+            📊 Google Test Et {renderTestIcon(testStatus.google)}
           </button>
         </div>
       </div>
+      {/* ...existing code... */}
     </div>
   );
 };
