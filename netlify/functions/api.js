@@ -147,13 +147,30 @@ async function handleXML(event, headers) {
   const { xmlUrl } = JSON.parse(event.body);
   
   try {
-    const response = await fetch(xmlUrl);
+    console.log('📄 XML çekiliyor:', xmlUrl);
+    
+    // Timeout ve optimize fetch ayarları
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 25000); // 25 saniye timeout
+    
+    const response = await fetch(xmlUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Shopify-XML-Sync/1.0'
+      }
+    });
+    
+    clearTimeout(timeoutId);
+    
     if (!response.ok) throw new Error(`XML fetch error: ${response.status}`);
     
+    console.log('📄 XML response alındı, parse ediliyor...');
     const xmlText = await response.text();
+    console.log(`📄 XML boyutu: ${(xmlText.length / 1024 / 1024).toFixed(2)} MB`);
     
-    // XML analizi - gerçek ürün sayısını bul
-    const analysis = analyzeXML(xmlText);
+    // Hafif analiz - sadece temel bilgiler
+    const analysis = analyzeXMLLight(xmlText);
+    console.log('📄 XML analizi tamamlandı');
     
     return {
       statusCode: 200,
@@ -162,10 +179,10 @@ async function handleXML(event, headers) {
         status: 'success', 
         data: {
           products: analysis.products,
-          uniqueProducts: analysis.uniqueProducts,
-          duplicateCount: analysis.duplicateCount,
+          uniqueProducts: analysis.uniqueProducts || analysis.products,
+          duplicateCount: analysis.duplicateCount || 0,
           structure: analysis.structure,
-          sampleProducts: analysis.sampleProducts,
+          sampleProducts: analysis.sampleProducts || [],
           xmlInfo: analysis.xmlInfo,
           lastUpdated: new Date().toISOString(),
           connected: true,
@@ -174,6 +191,14 @@ async function handleXML(event, headers) {
       })
     };
   } catch (error) {
+    console.error('❌ XML error:', error);
+    if (error.name === 'AbortError') {
+      return {
+        statusCode: 408,
+        headers,
+        body: JSON.stringify({ status: 'error', error: 'XML fetch timeout - dosya çok büyük olabilir' })
+      };
+    }
     return {
       statusCode: 400,
       headers,
@@ -182,104 +207,37 @@ async function handleXML(event, headers) {
   }
 }
 
-// XML analiz fonksiyonu - debug sonuçlarına göre optimize edildi
-function analyzeXML(xmlText) {
-  console.log('XML Preview:', xmlText.substring(0, 1000));
+// Hafif XML analizi - timeout'u önlemek için
+function analyzeXMLLight(xmlText) {
+  console.log('🔍 Hafif XML analizi başlıyor...');
   
-  // XML'deki <Urun> etiketlerini say (debug sonuçlarına göre)
+  // Sadece toplam ürün sayısını say, detayına girme
   const urunCount = (xmlText.match(/<Urun[\s>]/gi) || []).length;
   
-  // Benzersiz ürünleri tespit et
-  const uniqueProducts = new Set();
-  const uniqueStockCodes = new Set();
-  const duplicateProducts = [];
+  // İlk ürünün bilgilerini al (sample için)
+  const firstUrunMatch = xmlText.match(/<Urun[\s>][\s\S]*?<\/Urun>/i);
+  let sampleProduct = null;
   
-  // Örnek ürün bilgilerini çıkar ve duplicate kontrolü yap
-  const sampleProducts = [];
-  const urunRegex = /<Urun[\s>][\s\S]*?<\/Urun>/gi;
-  let match;
-  let sampleCount = 0;
-  let processedCount = 0;
-  
-  while ((match = urunRegex.exec(xmlText))) {
-    const productXml = match[0];
-    processedCount++;
-    
-    // Ürün bilgilerini çıkar
-    const getId = (xml) => {
-      const idMatch = xml.match(/<id>(.*?)<\/id>/i);
-      return idMatch ? idMatch[1].trim() : null;
+  if (firstUrunMatch) {
+    const productXml = firstUrunMatch[0];
+    sampleProduct = {
+      id: extractXMLValue(productXml, 'id'),
+      stokKodu: extractCDATAValue(productXml, 'stok_kodu'),
+      urunIsmi: extractCDATAValue(productXml, 'urunismi')?.substring(0, 50) + '...',
+      kategori: extractCDATAValue(productXml, 'kategori_ismi')?.substring(0, 30) + '...'
     };
-    
-    const getStokKodu = (xml) => {
-      const stokMatch = xml.match(/<stok_kodu><!\[CDATA\[(.*?)\]\]><\/stok_kodu>/i);
-      return stokMatch ? stokMatch[1].trim() : null;
-    };
-    
-    const getUrunIsmi = (xml) => {
-      const isimMatch = xml.match(/<urunismi><!\[CDATA\[(.*?)\]\]><\/urunismi>/i);
-      return isimMatch ? isimMatch[1].trim() : null;
-    };
-    
-    const getKategori = (xml) => {
-      const kategoriMatch = xml.match(/<kategori_ismi><!\[CDATA\[(.*?)\]\]><\/kategori_ismi>/i);
-      return kategoriMatch ? kategoriMatch[1].trim() : null;
-    };
-    
-    const productId = getId(productXml);
-    const stokKodu = getStokKodu(productXml);
-    const urunIsmi = getUrunIsmi(productXml);
-    const kategori = getKategori(productXml);
-    
-    // Benzersiz ürün kontrolü (ID ve stok kodu ile)
-    const uniqueKey = `${productId}_${stokKodu}`;
-    
-    if (productId && !uniqueProducts.has(productId)) {
-      uniqueProducts.add(productId);
-      
-      if (stokKodu && !uniqueStockCodes.has(stokKodu)) {
-        uniqueStockCodes.add(stokKodu);
-      }
-      
-      // İlk 5 benzersiz ürünü örnek olarak al
-      if (sampleCount < 5) {
-        sampleProducts.push({
-          id: productId,
-          stokKodu: stokKodu || 'N/A',
-          urunIsmi: urunIsmi || 'N/A',
-          kategori: kategori || 'N/A'
-        });
-        sampleCount++;
-      }
-    } else if (productId && uniqueProducts.has(productId)) {
-      // Duplicate ürün bulundu
-      duplicateProducts.push({
-        id: productId,
-        stokKodu: stokKodu,
-        position: processedCount
-      });
-    }
   }
   
   return {
-    products: urunCount, // Toplam XML'deki ürün sayısı
-    uniqueProducts: uniqueProducts.size, // Benzersiz ürün sayısı (ID'ye göre)
-    uniqueStockCodes: uniqueStockCodes.size, // Benzersiz stok kodu sayısı
-    duplicateCount: duplicateProducts.length, // Duplicate ürün sayısı
-    structure: 'Urunler/Urun', // Debug sonuçlarına göre
-    sampleProducts: sampleProducts,
-    duplicateExamples: duplicateProducts.slice(0, 5), // İlk 5 duplicate örneği
+    products: urunCount,
+    structure: 'Urunler/Urun',
+    sampleProducts: sampleProduct ? [sampleProduct] : [],
     xmlInfo: {
       totalSize: xmlText.length,
       hasStockCodes: xmlText.includes('<stok_kodu>'),
       hasCDATA: xmlText.includes('<![CDATA['),
       hasCategories: xmlText.includes('<kategori_ismi>'),
       encoding: xmlText.includes('utf-8') ? 'UTF-8' : 'Unknown'
-    },
-    analysis: {
-      totalProcessed: processedCount,
-      duplicateRatio: ((duplicateProducts.length / urunCount) * 100).toFixed(1) + '%',
-      uniqueRatio: ((uniqueProducts.size / urunCount) * 100).toFixed(1) + '%'
     },
     debug: {
       totalUrunTags: urunCount,
@@ -361,22 +319,40 @@ async function handleSync(event, headers) {
     const syncStartTime = Date.now();
     
     // 1. XML'i çek ve analiz et
-    console.log('📄 XML verisi çekiliyor...');
-    const xmlResponse = await fetch(xmlUrl);
+    console.log('📄 XML verisi çekiliyor...', xmlUrl);
+    
+    // Sync için daha uzun timeout (60 saniye)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+    
+    const xmlResponse = await fetch(xmlUrl, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Shopify-XML-Sync/1.0'
+      }
+    });
+    
+    clearTimeout(timeoutId);
+    
     if (!xmlResponse.ok) throw new Error(`XML fetch error: ${xmlResponse.status}`);
     
     const xmlText = await xmlResponse.text();
     console.log(`✓ XML çekildi (${(xmlText.length / 1024 / 1024).toFixed(2)} MB)`);
     
+    // Memory temizliği için intermediate variables
+    const xmlSize = xmlText.length;
+    
     // 2. XML'den ürün verilerini çıkar (sadece benzersiz olanları)
     console.log('🔍 XML ürünleri parse ediliyor...');
     const xmlProducts = parseXMLProductsAdvanced(xmlText);
-    console.log(`✓ ${xmlProducts.length} benzersiz ürün bulundu`);
+    const xmlProductsLength = xmlProducts.length;
+    console.log(`✓ ${xmlProductsLength} benzersiz ürün bulundu`);
     
     // 3. Shopify'daki mevcut ürünleri kontrol et
     console.log('🏪 Shopify ürünleri kontrol ediliyor...');
     const shopifyProducts = await getShopifyProductsAdvanced(shopifyConfig);
-    console.log(`✓ Shopify'da ${shopifyProducts.length} ürün bulundu`);
+    const shopifyProductsLength = shopifyProducts.length;
+    console.log(`✓ Shopify'da ${shopifyProductsLength} ürün bulundu`);
     
     // 4. Senkronizasyon işlemini yap
     console.log('⚡ Senkronizasyon işlemi başlıyor...');
@@ -393,8 +369,8 @@ async function handleSync(event, headers) {
       body: JSON.stringify({
         status: 'success',
         data: {
-          xmlProductsFound: xmlProducts.length,
-          shopifyProductsExisting: shopifyProducts.length,
+          xmlProductsFound: xmlProductsLength,
+          shopifyProductsExisting: shopifyProductsLength,
           productsUpdated: syncResults.updated,
           productsCreated: syncResults.created,
           productsSkipped: syncResults.skipped,

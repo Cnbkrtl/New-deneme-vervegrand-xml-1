@@ -44,18 +44,44 @@ const Dashboard = () => {
           };
         }
 
+        // XML için özel timeout ayarı
+        const timeoutMs = key === 'xml' ? 30000 : 10000; // XML için 30 saniye
+        
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+        
         const response = await fetch(`/api/${endpoint}`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(body)
+          body: JSON.stringify(body),
+          signal: controller.signal
         });
         
-        if (!response.ok) throw new Error('Network response was not ok');
+        clearTimeout(timeoutId);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`${response.status}: ${errorText}`);
+        }
         const data = await response.json();
         setConnectionStatus(prev => ({ ...prev, [key]: { status: 'connected', data: data.data || {} } }));
       } catch (error) {
         console.error(`Error testing ${key}:`, error);
-        setConnectionStatus(prev => ({ ...prev, [key]: { status: 'failed', data: {} } }));
+        let errorMessage = error.message;
+        
+        // Timeout hatası için özel mesaj
+        if (error.name === 'AbortError') {
+          errorMessage = `${key.toUpperCase()} bağlantısı zaman aşımına uğradı (${timeoutMs/1000}s)`;
+        }
+        
+        setConnectionStatus(prev => ({ 
+          ...prev, 
+          [key]: { 
+            status: 'failed', 
+            data: {}, 
+            error: errorMessage 
+          } 
+        }));
       }
     };
 
@@ -101,11 +127,18 @@ const Dashboard = () => {
       
       console.log('🚀 Senkronizasyon isteği gönderiliyor...');
       
+      // Sync için uzun timeout (90 saniye)
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      
       const response = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(syncRequest)
+        body: JSON.stringify(syncRequest),
+        signal: controller.signal
       });
+      
+      clearTimeout(timeoutId);
       
       console.log('📡 Response status:', response.status);
       
@@ -136,8 +169,43 @@ const Dashboard = () => {
       alert(summary);
     } catch (error) {
       setSyncStatus('failed');
-      setSyncDetails({ error: error.message });
-      alert('❌ Senkronizasyon başarısız oldu: ' + error.message);
+      
+      let errorMessage = error.message;
+      let errorDetails = '';
+      
+      if (error.name === 'AbortError') {
+        errorMessage = 'Senkronizasyon zaman aşımına uğradı (90 saniye)';
+        errorDetails = `
+🚨 Zaman Aşımı Sorunu:
+• XML dosyası çok büyük veya yavaş indiriliyor
+• Shopify API çok yavaş yanıt veriyor
+• İnternet bağlantısı yavaş
+
+💡 Çözüm Önerileri:
+• Daha az ürünle test yapın (5-10 ürün)
+• İnternet bağlantınızı kontrol edin
+• Tekrar deneyin
+        `;
+      } else if (error.message.includes('504') || error.message.includes('Gateway Timeout')) {
+        errorMessage = 'Sunucu zaman aşımı (504 Gateway Timeout)';
+        errorDetails = `
+🚨 Sunucu Timeout Hatası:
+• Serverless function 10 dakika limitini aştı
+• XML dosyası çok büyük (${xmlAnalysis?.totalSize || 'bilinmiyor'})
+
+💡 Çözüm Önerileri:
+• Daha az ürünle sync yapın (max 10-20)
+• XML'i optimize edin
+• Tekrar deneyin
+        `;
+      }
+      
+      setSyncDetails({ 
+        error: errorMessage,
+        details: errorDetails
+      });
+      
+      alert('❌ Senkronizasyon başarısız oldu: ' + errorMessage);
     }
   };
 
@@ -260,7 +328,26 @@ const Dashboard = () => {
             </div>
           )}
           {connectionStatus.xml.status === 'failed' && (
-            <p style={{color: 'red'}}>XML verisi alınamadı. Ayarlarda XML URL'ini kontrol edin.</p>
+            <div>
+              <p style={{color: 'red'}}>
+                ❌ XML verisi alınamadı. 
+                {connectionStatus.xml.error && (
+                  <span style={{display: 'block', marginTop: '8px', fontSize: '14px'}}>
+                    <strong>Hata:</strong> {connectionStatus.xml.error}
+                  </span>
+                )}
+              </p>
+              
+              <div style={{marginTop: '12px', padding: '12px', background: '#fef2f2', borderRadius: '8px', fontSize: '14px'}}>
+                <p><strong>💡 Çözüm Önerileri:</strong></p>
+                <ul style={{marginLeft: '20px', marginTop: '8px'}}>
+                  <li>XML URL'inin doğru olduğunu kontrol edin</li>
+                  <li>XML dosyası çok büyükse, sunucu zaman aşımına uğrayabilir</li>
+                  <li>İnternet bağlantınızı kontrol edin</li>
+                  <li>Birkaç dakika bekleyip tekrar deneyin</li>
+                </ul>
+              </div>
+            </div>
           )}
         </div>
 
