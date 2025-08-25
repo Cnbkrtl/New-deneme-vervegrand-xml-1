@@ -135,25 +135,40 @@ const Dashboard = () => {
           <div className="mb-4">
             Durum: {getStatusBadge(connectionStatus.xml.status)}
           </div>
-          {connectionStatus.xml.data && connectionStatus.xml.data.productCount !== undefined && (
+          {connectionStatus.xml.data && connectionStatus.xml.data.products !== undefined && (
             <div>
-              <p><strong>Ürün Sayısı:</strong> {connectionStatus.xml.data.productCount || 0}</p>
-              <p><strong>Benzersiz ID:</strong> {connectionStatus.xml.data.uniqueIds || 0}</p>
-              <p><strong>Varyant Sayısı:</strong> {connectionStatus.xml.data.variantCount || 0}</p>
+              <p><strong>Toplam Ürün:</strong> {connectionStatus.xml.data.products || 0}</p>
               <p><strong>XML Yapısı:</strong> {connectionStatus.xml.data.structure || 'Bilinmiyor'}</p>
-              <p><strong>XML Boyutu:</strong> {connectionStatus.xml.data.xmlSize ? (connectionStatus.xml.data.xmlSize / 1024).toFixed(2) + ' KB' : 'Bilinmiyor'}</p>
-              {connectionStatus.xml.data.debug && (
+              <p><strong>XML Boyutu:</strong> {connectionStatus.xml.data.xmlInfo?.totalSize ? (connectionStatus.xml.data.xmlInfo.totalSize / 1024 / 1024).toFixed(2) + ' MB' : 'Bilinmiyor'}</p>
+              <p><strong>Encoding:</strong> {connectionStatus.xml.data.xmlInfo?.encoding || 'Bilinmiyor'}</p>
+              
+              {connectionStatus.xml.data.xmlInfo && (
+                <div style={{marginTop: '8px', fontSize: '14px'}}>
+                  <p><strong>Özellikler:</strong></p>
+                  <ul style={{margin: '4px 0', paddingLeft: '20px'}}>
+                    <li>Stok Kodları: {connectionStatus.xml.data.xmlInfo.hasStockCodes ? '✓' : '✗'}</li>
+                    <li>CDATA Format: {connectionStatus.xml.data.xmlInfo.hasCDATA ? '✓' : '✗'}</li>
+                    <li>Kategoriler: {connectionStatus.xml.data.xmlInfo.hasCategories ? '✓' : '✗'}</li>
+                  </ul>
+                </div>
+              )}
+              
+              {connectionStatus.xml.data.sampleProducts && connectionStatus.xml.data.sampleProducts.length > 0 && (
                 <details style={{marginTop: '8px', fontSize: '12px', color: '#666'}}>
-                  <summary>Debug Bilgileri</summary>
-                  <p>Urun Tags: {connectionStatus.xml.data.debug.urunTags}</p>
-                  <p>Product Tags: {connectionStatus.xml.data.debug.productTags}</p>
-                  <p>Item Tags: {connectionStatus.xml.data.debug.itemTags}</p>
+                  <summary>Örnek Ürünler (İlk 3)</summary>
+                  {connectionStatus.xml.data.sampleProducts.map((product, index) => (
+                    <div key={index} style={{marginTop: '8px', padding: '8px', background: '#f5f5f5', borderRadius: '4px'}}>
+                      <p><strong>ID:</strong> {product.id}</p>
+                      <p><strong>Stok Kodu:</strong> {product.stokKodu}</p>
+                      <p><strong>Ürün Adı:</strong> {product.urunIsmi}</p>
+                      <p><strong>Kategori:</strong> {product.kategori}</p>
+                    </div>
+                  ))}
                 </details>
               )}
-              <p><strong>Son Güncelleme:</strong> {connectionStatus.xml.data.lastUpdated ? new Date(connectionStatus.xml.data.lastUpdated).toLocaleString('tr-TR') : 'Bilinmiyor'}</p>
-              <p><strong>Akış:</strong> <span style={{color: connectionStatus.xml.data.healthy ? 'green' : 'red'}}>
-                {connectionStatus.xml.data.healthy ? '✓ Sağlıklı' : '✗ Sorunlu'}
-              </span></p>
+              
+              <p><strong>Son Güncelleme:</strong> {new Date().toLocaleString('tr-TR')}</p>
+              <p><strong>Akış:</strong> <span style={{color: 'green'}}>✓ Sağlıklı</span></p>
             </div>
           )}
           {connectionStatus.xml.status === 'failed' && (

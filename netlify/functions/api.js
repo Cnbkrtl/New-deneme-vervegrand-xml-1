@@ -180,66 +180,67 @@ async function handleXML(event, headers) {
   }
 }
 
-// XML analiz fonksiyonu
+// XML analiz fonksiyonu - debug sonuçlarına göre optimize edildi
 function analyzeXML(xmlText) {
-  // Önce XML yapısını incele
   console.log('XML Preview:', xmlText.substring(0, 1000));
   
-  // Benzersiz ürün ID'lerini bul
-  const uniqueProducts = new Set();
+  // XML'deki <Urun> etiketlerini say (debug sonuçlarına göre)
+  const urunCount = (xmlText.match(/<Urun[\s>]/gi) || []).length;
   
-  // Farklı ürün ID pattern'lerini dene
-  const idPatterns = [
-    /<urun[^>]*id="([^"]+)"/gi,           // <urun id="123">
-    /<urun[^>]*><id>([^<]+)<\/id>/gi,     // <urun><id>123</id>
-    /<product[^>]*id="([^"]+)"/gi,        // <product id="123">
-    /<item[^>]*id="([^"]+)"/gi,           // <item id="123">
-    /<urun[^>]*><kod>([^<]+)<\/kod>/gi,   // <urun><kod>123</kod>
-  ];
+  // Örnek ürün bilgilerini çıkar
+  const sampleProducts = [];
+  const urunRegex = /<Urun[\s>][\s\S]*?<\/Urun>/gi;
+  let match;
+  let sampleCount = 0;
   
-  for (const pattern of idPatterns) {
-    let match;
-    while ((match = pattern.exec(xmlText)) !== null) {
-      uniqueProducts.add(match[1]);
-    }
-  }
-  
-  // Eğer ID bulunamazsa, benzersiz ürün başlıklarını say
-  if (uniqueProducts.size === 0) {
-    const titlePatterns = [
-      /<baslik>([^<]+)<\/baslik>/gi,
-      /<name>([^<]+)<\/name>/gi,
-      /<title>([^<]+)<\/title>/gi
-    ];
+  while ((match = urunRegex.exec(xmlText)) && sampleCount < 3) {
+    const productXml = match[0];
     
-    for (const pattern of titlePatterns) {
-      let match;
-      while ((match = pattern.exec(xmlText)) !== null) {
-        uniqueProducts.add(match[1]);
-      }
-    }
+    // Ürün bilgilerini çıkar
+    const getId = (xml) => {
+      const idMatch = xml.match(/<id>(.*?)<\/id>/i);
+      return idMatch ? idMatch[1] : 'N/A';
+    };
+    
+    const getStokKodu = (xml) => {
+      const stokMatch = xml.match(/<stok_kodu><!\[CDATA\[(.*?)\]\]><\/stok_kodu>/i);
+      return stokMatch ? stokMatch[1] : 'N/A';
+    };
+    
+    const getUrunIsmi = (xml) => {
+      const isimMatch = xml.match(/<urunismi><!\[CDATA\[(.*?)\]\]><\/urunismi>/i);
+      return isimMatch ? isimMatch[1] : 'N/A';
+    };
+    
+    const getKategori = (xml) => {
+      const kategoriMatch = xml.match(/<kategori_ismi><!\[CDATA\[(.*?)\]\]><\/kategori_ismi>/i);
+      return kategoriMatch ? kategoriMatch[1] : 'N/A';
+    };
+    
+    sampleProducts.push({
+      id: getId(productXml),
+      stokKodu: getStokKodu(productXml),
+      urunIsmi: getUrunIsmi(productXml),
+      kategori: getKategori(productXml)
+    });
+    
+    sampleCount++;
   }
-  
-  // Son çare: ürün taglarını say ama benzersiz olanları
-  let productCount = uniqueProducts.size;
-  if (productCount === 0) {
-    const urunTags = xmlText.match(/<urun[^>]*>/gi) || [];
-    productCount = urunTags.length;
-  }
-  
-  // Varyant analizi
-  const variantCount = (xmlText.match(/<varyant[^>]*>/gi) || []).length + 
-                      (xmlText.match(/<variant[^>]*>/gi) || []).length;
   
   return {
-    products: productCount,
-    variants: variantCount,
-    structure: 'urun', // Sentos XML yapısı
-    uniqueIds: uniqueProducts.size,
+    products: urunCount,
+    structure: 'Urunler/Urun', // Debug sonuçlarına göre
+    sampleProducts: sampleProducts,
+    xmlInfo: {
+      totalSize: xmlText.length,
+      hasStockCodes: xmlText.includes('<stok_kodu>'),
+      hasCDATA: xmlText.includes('<![CDATA['),
+      hasCategories: xmlText.includes('<kategori_ismi>'),
+      encoding: xmlText.includes('utf-8') ? 'UTF-8' : 'Unknown'
+    },
     debug: {
-      urunTags: (xmlText.match(/<urun[^>]*>/gi) || []).length,
-      productTags: (xmlText.match(/<product[^>]*>/gi) || []).length,
-      itemTags: (xmlText.match(/<item[^>]*>/gi) || []).length
+      totalUrunTags: urunCount,
+      xmlPreview: xmlText.substring(0, 500)
     }
   };
 }
