@@ -143,11 +143,23 @@ const Dashboard = () => {
       console.log('📡 Response status:', response.status);
       
       if (!response.ok) {
-        const errorText = await response.text();
+        let errorText;
+        try {
+          errorText = await response.text();
+        } catch (parseError) {
+          errorText = `HTTP ${response.status} - Response parse error`;
+        }
         console.error('❌ Sync response error:', errorText);
         throw new Error(`Sync failed (${response.status}): ${errorText}`);
       }
-      const data = await response.json();
+      
+      let data;
+      try {
+        data = await response.json();
+      } catch (jsonError) {
+        console.error('❌ JSON parse error:', jsonError);
+        throw new Error('Sync response format error - invalid JSON');
+      }
       
       setSyncStatus('completed');
       setSyncDetails(data.data);
@@ -170,6 +182,12 @@ const Dashboard = () => {
     } catch (error) {
       setSyncStatus('failed');
       
+      console.error('🚨 Sync Error Details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack
+      });
+      
       let errorMessage = error.message;
       let errorDetails = '';
       
@@ -191,12 +209,24 @@ const Dashboard = () => {
         errorDetails = `
 🚨 Sunucu Timeout Hatası:
 • Serverless function 10 dakika limitini aştı
-• XML dosyası çok büyük (${xmlAnalysis?.totalSize || 'bilinmiyor'})
+• XML dosyası çok büyük veya işleme çok uzun sürüyor
 
 💡 Çözüm Önerileri:
 • Daha az ürünle sync yapın (max 10-20)
 • XML'i optimize edin
 • Tekrar deneyin
+        `;
+      } else if (error.message.includes('JSON') || error.message.includes('parse')) {
+        errorMessage = 'Sunucu yanıt formatı hatası';
+        errorDetails = `
+🚨 Response Parse Hatası:
+• Sunucu geçersiz JSON yanıtı gönderdi
+• API endpoint sorunu olabilir
+
+💡 Çözüm Önerileri:
+• Sayfayı yenileyin ve tekrar deneyin
+• Birkaç dakika bekleyip tekrar deneyin
+• Console'da detaylı hatayı kontrol edin
         `;
       }
       

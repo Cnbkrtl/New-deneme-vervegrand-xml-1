@@ -411,14 +411,29 @@ async function handleSync(event, headers) {
     };
   } catch (error) {
     console.error('❌ Senkronizasyon hatası:', error);
+    
+    let statusCode = 500;
+    let errorMessage = error.message;
+    
+    if (error.name === 'AbortError') {
+      statusCode = 408;
+      errorMessage = 'Senkronizasyon zaman aşımına uğradı (60s) - XML dosyası çok büyük';
+    } else if (error.message.includes('fetch')) {
+      statusCode = 502;
+      errorMessage = 'XML dosyası indirilemedi - bağlantı hatası';
+    } else if (error.message.includes('parse')) {
+      statusCode = 422;
+      errorMessage = 'XML dosyası parse edilemedi - format hatası';
+    }
+    
     return {
-      statusCode: 500,
+      statusCode,
       headers,
       body: JSON.stringify({ 
         status: 'error', 
-        error: error.message,
-        timestamp: new Date().toISOString(),
-        details: error.stack
+        error: errorMessage,
+        originalError: error.message,
+        timestamp: new Date().toISOString()
       })
     };
   }
