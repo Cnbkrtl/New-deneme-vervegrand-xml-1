@@ -16,68 +16,24 @@ const Dashboard = () => {
   };
 
   const testConnections = async () => {
-    // Shopify API Test
-    setConnectionStatus(prev => ({
-      ...prev,
-      shopify: { status: 'testing', data: {} }
-    }));
-    
-    // Simulated API call
-    setTimeout(() => {
-      setConnectionStatus(prev => ({
-        ...prev,
-        shopify: {
-          status: 'connected',
-          data: {
-            storeName: 'My Store',
-            productCount: 156,
-            variantCount: 324,
-            stockCount: 1234
-          }
-        }
-      }));
-    }, 2000);
+    const testEndpoint = async (endpoint, key) => {
+      setConnectionStatus(prev => ({ ...prev, [key]: { status: 'testing', data: {} } }));
+      try {
+        const response = await fetch(`/api/${endpoint}`);
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+        setConnectionStatus(prev => ({ ...prev, [key]: { status: 'connected', data } }));
+      } catch (error) {
+        console.error(`Error testing ${key}:`, error);
+        setConnectionStatus(prev => ({ ...prev, [key]: { status: 'failed', data: {} } }));
+      }
+    };
 
-    // XML Test
-    setConnectionStatus(prev => ({
-      ...prev,
-      xml: { status: 'testing', data: {} }
-    }));
-    
-    setTimeout(() => {
-      setConnectionStatus(prev => ({
-        ...prev,
-        xml: {
-          status: 'connected',
-          data: {
-            version: '2.1',
-            format: 'Sentos XML',
-            productCount: 142,
-            variantCount: 298,
-            stockCount: 1156
-          }
-        }
-      }));
-    }, 3000);
-
-    // Google Test
-    setConnectionStatus(prev => ({
-      ...prev,
-      google: { status: 'testing', data: {} }
-    }));
-    
-    setTimeout(() => {
-      setConnectionStatus(prev => ({
-        ...prev,
-        google: {
-          status: 'connected',
-          data: {
-            sheetsConnected: true,
-            sheetName: 'Product Data'
-          }
-        }
-      }));
-    }, 4000);
+    await Promise.all([
+      testEndpoint('shopify', 'shopify'),
+      testEndpoint('xml', 'xml'),
+      testEndpoint('google', 'google')
+    ]);
   };
 
   const startSync = async () => {
