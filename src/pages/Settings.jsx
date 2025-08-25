@@ -72,6 +72,10 @@ const Settings = () => {
       endpoint = '/api/xml';
       body = xmlSettings;
     }
+    if (type === 'xml-debug') {
+      endpoint = '/api/xml-debug';
+      body = xmlSettings;
+    }
     if (type === 'google') {
       endpoint = '/api/google';
       body = googleSettings;
@@ -86,6 +90,13 @@ const Settings = () => {
         body: JSON.stringify(body),
       });
       if (!response.ok) throw new Error('Network response was not ok');
+      const data = await response.json();
+      
+      if (type === 'xml-debug') {
+        console.log('XML Debug Data:', data.data);
+        alert(`XML Yapısı:\n\nÖrnek Ürün:\n${data.data.sampleStructure}\n\nTag Sayıları:\nUrun: ${data.data.tagCounts.urun}\nProduct: ${data.data.tagCounts.product}\nItem: ${data.data.tagCounts.item}`);
+      }
+      
       setTestStatus(prev => ({ ...prev, [type]: 'success' }));
     } catch (err) {
       setTestStatus(prev => ({ ...prev, [type]: 'error' }));
@@ -236,6 +247,11 @@ const Settings = () => {
           </button>
           <button className="btn" onClick={() => handleTest('google')} disabled={testStatus.google === 'loading'}>
             📊 Google Test Et {renderTestIcon(testStatus.google)}
+          </button>
+        </div>
+        <div style={{marginTop: '12px', textAlign: 'center'}}>
+          <button className="btn" style={{background: '#f59e0b'}} onClick={() => handleTest('xml-debug')}>
+            🔍 XML Yapısını İncele
           </button>
         </div>
       </div>

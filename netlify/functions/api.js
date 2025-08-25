@@ -17,6 +17,9 @@ exports.handler = async (event, context) => {
   if (path.endsWith('/xml')) {
     return handleXML(event, headers);
   }
+  if (path.endsWith('/xml-debug')) {
+    return handleXMLDebug(event, headers);
+  }
   if (path.endsWith('/google')) {
     return handleGoogle(event, headers);
   }
@@ -72,6 +75,68 @@ async function handleShopify(event, headers) {
       body: JSON.stringify({ status: 'error', error: error.message })
     };
   }
+}
+
+async function handleXMLDebug(event, headers) {
+  if (event.httpMethod !== 'POST') {
+    return { statusCode: 405, headers, body: JSON.stringify({ error: 'Method not allowed' }) };
+  }
+  
+  const { xmlUrl } = JSON.parse(event.body);
+  
+  try {
+    const response = await fetch(xmlUrl);
+    if (!response.ok) throw new Error(`XML fetch error: ${response.status}`);
+    
+    const xmlText = await response.text();
+    
+    // XML'in ilk 2000 karakterini döndür
+    const preview = xmlText.substring(0, 2000);
+    
+    // Temel tag analizi
+    const analysis = {
+      totalLength: xmlText.length,
+      preview: preview,
+      tagCounts: {
+        urun: (xmlText.match(/<urun[^>]*>/gi) || []).length,
+        product: (xmlText.match(/<product[^>]*>/gi) || []).length,
+        item: (xmlText.match(/<item[^>]*>/gi) || []).length,
+        goods: (xmlText.match(/<goods[^>]*>/gi) || []).length
+      },
+      sampleStructure: extractSampleProduct(xmlText)
+    };
+    
+    return {
+      statusCode: 200,
+      headers,
+      body: JSON.stringify({ 
+        status: 'success', 
+        data: analysis
+      })
+    };
+  } catch (error) {
+    return {
+      statusCode: 400,
+      headers,
+      body: JSON.stringify({ status: 'error', error: error.message })
+    };
+  }
+}
+
+// İlk ürünün yapısını çıkar
+function extractSampleProduct(xmlText) {
+  // İlk ürün tagını bul
+  const urunMatch = xmlText.match(/<urun[^>]*>[\s\S]*?<\/urun>/i);
+  if (urunMatch) {
+    return urunMatch[0].substring(0, 500) + '...';
+  }
+  
+  const productMatch = xmlText.match(/<product[^>]*>[\s\S]*?<\/product>/i);
+  if (productMatch) {
+    return productMatch[0].substring(0, 500) + '...';
+  }
+  
+  return 'Ürün yapısı bulunamadı';
 }
 
 async function handleXML(event, headers) {
