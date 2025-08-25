@@ -46,7 +46,7 @@ const Dashboard = () => {
         
         if (!response.ok) throw new Error('Network response was not ok');
         const data = await response.json();
-        setConnectionStatus(prev => ({ ...prev, [key]: { status: 'connected', data } }));
+        setConnectionStatus(prev => ({ ...prev, [key]: { status: 'connected', data: data.data || {} } }));
       } catch (error) {
         console.error(`Error testing ${key}:`, error);
         setConnectionStatus(prev => ({ ...prev, [key]: { status: 'failed', data: {} } }));
@@ -116,13 +116,16 @@ const Dashboard = () => {
           <div className="mb-4">
             Durum: {getStatusBadge(connectionStatus.shopify.status)}
           </div>
-          {connectionStatus.shopify.data.storeName && (
+          {connectionStatus.shopify.data && connectionStatus.shopify.data.storeName && (
             <div>
               <p><strong>Mağaza:</strong> {connectionStatus.shopify.data.storeName}</p>
-              <p><strong>Ürün Sayısı:</strong> {connectionStatus.shopify.data.productCount}</p>
-              <p><strong>Son Güncelleme:</strong> {new Date(connectionStatus.shopify.data.lastUpdated).toLocaleString('tr-TR')}</p>
+              <p><strong>Ürün Sayısı:</strong> {connectionStatus.shopify.data.productCount || 0}</p>
+              <p><strong>Son Güncelleme:</strong> {connectionStatus.shopify.data.lastUpdated ? new Date(connectionStatus.shopify.data.lastUpdated).toLocaleString('tr-TR') : 'Bilinmiyor'}</p>
               <p><strong>Bağlantı:</strong> <span style={{color: 'green'}}>✓ Sağlıklı</span></p>
             </div>
+          )}
+          {connectionStatus.shopify.status === 'failed' && (
+            <p style={{color: 'red'}}>Shopify bağlantısı kurulamadı. Ayarlarda API bilgilerinizi kontrol edin.</p>
           )}
         </div>
 
@@ -132,16 +135,19 @@ const Dashboard = () => {
           <div className="mb-4">
             Durum: {getStatusBadge(connectionStatus.xml.status)}
           </div>
-          {connectionStatus.xml.data.productCount && (
+          {connectionStatus.xml.data && connectionStatus.xml.data.productCount !== undefined && (
             <div>
-              <p><strong>Ürün Sayısı:</strong> {connectionStatus.xml.data.productCount}</p>
-              <p><strong>Varyant Sayısı:</strong> {connectionStatus.xml.data.variantCount}</p>
-              <p><strong>XML Boyutu:</strong> {(connectionStatus.xml.data.xmlSize / 1024).toFixed(2)} KB</p>
-              <p><strong>Son Güncelleme:</strong> {new Date(connectionStatus.xml.data.lastUpdated).toLocaleString('tr-TR')}</p>
+              <p><strong>Ürün Sayısı:</strong> {connectionStatus.xml.data.productCount || 0}</p>
+              <p><strong>Varyant Sayısı:</strong> {connectionStatus.xml.data.variantCount || 0}</p>
+              <p><strong>XML Boyutu:</strong> {connectionStatus.xml.data.xmlSize ? (connectionStatus.xml.data.xmlSize / 1024).toFixed(2) + ' KB' : 'Bilinmiyor'}</p>
+              <p><strong>Son Güncelleme:</strong> {connectionStatus.xml.data.lastUpdated ? new Date(connectionStatus.xml.data.lastUpdated).toLocaleString('tr-TR') : 'Bilinmiyor'}</p>
               <p><strong>Akış:</strong> <span style={{color: connectionStatus.xml.data.healthy ? 'green' : 'red'}}>
                 {connectionStatus.xml.data.healthy ? '✓ Sağlıklı' : '✗ Sorunlu'}
               </span></p>
             </div>
+          )}
+          {connectionStatus.xml.status === 'failed' && (
+            <p style={{color: 'red'}}>XML verisi alınamadı. Ayarlarda XML URL'ini kontrol edin.</p>
           )}
         </div>
 
@@ -151,13 +157,16 @@ const Dashboard = () => {
           <div className="mb-4">
             Durum: {getStatusBadge(connectionStatus.google.status)}
           </div>
-          {connectionStatus.google.data.sheetName && (
+          {connectionStatus.google.data && connectionStatus.google.data.sheetName && (
             <div>
               <p><strong>Sayfa Adı:</strong> {connectionStatus.google.data.sheetName}</p>
-              <p><strong>Sayfa Sayısı:</strong> {connectionStatus.google.data.sheetCount}</p>
-              <p><strong>Son Güncelleme:</strong> {new Date(connectionStatus.google.data.lastUpdated).toLocaleString('tr-TR')}</p>
+              <p><strong>Sayfa Sayısı:</strong> {connectionStatus.google.data.sheetCount || 0}</p>
+              <p><strong>Son Güncelleme:</strong> {connectionStatus.google.data.lastUpdated ? new Date(connectionStatus.google.data.lastUpdated).toLocaleString('tr-TR') : 'Bilinmiyor'}</p>
               <p><strong>Bağlantı:</strong> <span style={{color: 'green'}}>✓ Aktif</span></p>
             </div>
+          )}
+          {connectionStatus.google.status === 'failed' && (
+            <p style={{color: 'red'}}>Google Sheets bağlantısı kurulamadı. API anahtarınızı kontrol edin.</p>
           )}
         </div>
       </div>
