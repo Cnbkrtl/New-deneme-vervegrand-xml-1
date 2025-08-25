@@ -1,5 +1,3 @@
-const axios = require('axios');
-
 exports.handler = async (event, context) => {
   const headers = {
     'Access-Control-Allow-Origin': '*',
@@ -42,13 +40,30 @@ async function handleShopify(event, headers) {
   
   try {
     const url = `https://${storeUrl}/admin/api/2023-01/shop.json`;
-    const response = await axios.get(url, {
+    const response = await fetch(url, {
       headers: { 'X-Shopify-Access-Token': accessToken }
     });
+    
+    if (!response.ok) throw new Error(`Shopify API error: ${response.status}`);
+    const data = await response.json();
+    
+    const productsResponse = await fetch(`https://${storeUrl}/admin/api/2023-01/products/count.json`, {
+      headers: { 'X-Shopify-Access-Token': accessToken }
+    });
+    const productsData = await productsResponse.json();
+    
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ status: 'success', data: response.data.shop })
+      body: JSON.stringify({ 
+        status: 'success', 
+        data: {
+          storeName: data.shop.name,
+          productCount: productsData.count || 0,
+          lastUpdated: new Date().toISOString(),
+          connected: true
+        }
+      })
     };
   } catch (error) {
     return {
@@ -67,11 +82,27 @@ async function handleXML(event, headers) {
   const { xmlUrl } = JSON.parse(event.body);
   
   try {
-    const response = await axios.get(xmlUrl);
+    const response = await fetch(xmlUrl);
+    if (!response.ok) throw new Error(`XML fetch error: ${response.status}`);
+    
+    const xmlText = await response.text();
+    const productCount = (xmlText.match(/<item>/g) || []).length;
+    const variantCount = (xmlText.match(/<variant>/g) || []).length;
+    
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ status: 'success', data: response.data })
+      body: JSON.stringify({ 
+        status: 'success', 
+        data: {
+          productCount: productCount,
+          variantCount: variantCount,
+          xmlSize: xmlText.length,
+          lastUpdated: new Date().toISOString(),
+          connected: true,
+          healthy: productCount > 0
+        }
+      })
     };
   } catch (error) {
     return {
@@ -91,11 +122,23 @@ async function handleGoogle(event, headers) {
   
   try {
     const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?key=${apiKey}`;
-    const response = await axios.get(url);
+    const response = await fetch(url);
+    
+    if (!response.ok) throw new Error(`Google API error: ${response.status}`);
+    const data = await response.json();
+    
     return {
       statusCode: 200,
       headers,
-      body: JSON.stringify({ status: 'success', data: response.data })
+      body: JSON.stringify({ 
+        status: 'success', 
+        data: {
+          sheetName: data.properties.title,
+          sheetCount: data.sheets.length,
+          lastUpdated: new Date().toISOString(),
+          connected: true
+        }
+      })
     };
   } catch (error) {
     return {
