@@ -138,9 +138,18 @@ const Dashboard = () => {
           {connectionStatus.xml.data && connectionStatus.xml.data.productCount !== undefined && (
             <div>
               <p><strong>Ürün Sayısı:</strong> {connectionStatus.xml.data.productCount || 0}</p>
+              <p><strong>Benzersiz ID:</strong> {connectionStatus.xml.data.uniqueIds || 0}</p>
               <p><strong>Varyant Sayısı:</strong> {connectionStatus.xml.data.variantCount || 0}</p>
               <p><strong>XML Yapısı:</strong> {connectionStatus.xml.data.structure || 'Bilinmiyor'}</p>
               <p><strong>XML Boyutu:</strong> {connectionStatus.xml.data.xmlSize ? (connectionStatus.xml.data.xmlSize / 1024).toFixed(2) + ' KB' : 'Bilinmiyor'}</p>
+              {connectionStatus.xml.data.debug && (
+                <details style={{marginTop: '8px', fontSize: '12px', color: '#666'}}>
+                  <summary>Debug Bilgileri</summary>
+                  <p>Urun Tags: {connectionStatus.xml.data.debug.urunTags}</p>
+                  <p>Product Tags: {connectionStatus.xml.data.debug.productTags}</p>
+                  <p>Item Tags: {connectionStatus.xml.data.debug.itemTags}</p>
+                </details>
+              )}
               <p><strong>Son Güncelleme:</strong> {connectionStatus.xml.data.lastUpdated ? new Date(connectionStatus.xml.data.lastUpdated).toLocaleString('tr-TR') : 'Bilinmiyor'}</p>
               <p><strong>Akış:</strong> <span style={{color: connectionStatus.xml.data.healthy ? 'green' : 'red'}}>
                 {connectionStatus.xml.data.healthy ? '✓ Sağlıklı' : '✗ Sorunlu'}

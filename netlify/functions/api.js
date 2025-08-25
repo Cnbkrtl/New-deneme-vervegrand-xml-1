@@ -117,23 +117,49 @@ async function handleXML(event, headers) {
 
 // XML analiz fonksiyonu
 function analyzeXML(xmlText) {
-  // Sentos XML yapısı analizi
-  const productPatterns = [
-    /<urun[^>]*>/gi,           // <urun> tagları
-    /<product[^>]*>/gi,        // <product> tagları  
-    /<item[^>]*>/gi,           // <item> tagları
-    /<goods[^>]*>/gi           // <goods> tagları
+  // Önce XML yapısını incele
+  console.log('XML Preview:', xmlText.substring(0, 1000));
+  
+  // Benzersiz ürün ID'lerini bul
+  const uniqueProducts = new Set();
+  
+  // Farklı ürün ID pattern'lerini dene
+  const idPatterns = [
+    /<urun[^>]*id="([^"]+)"/gi,           // <urun id="123">
+    /<urun[^>]*><id>([^<]+)<\/id>/gi,     // <urun><id>123</id>
+    /<product[^>]*id="([^"]+)"/gi,        // <product id="123">
+    /<item[^>]*id="([^"]+)"/gi,           // <item id="123">
+    /<urun[^>]*><kod>([^<]+)<\/kod>/gi,   // <urun><kod>123</kod>
   ];
   
-  let maxProducts = 0;
-  let detectedStructure = 'unknown';
-  
-  for (const pattern of productPatterns) {
-    const matches = xmlText.match(pattern) || [];
-    if (matches.length > maxProducts) {
-      maxProducts = matches.length;
-      detectedStructure = pattern.source.replace(/[<>[\]\\^$.*+?(){}|gi]/g, '');
+  for (const pattern of idPatterns) {
+    let match;
+    while ((match = pattern.exec(xmlText)) !== null) {
+      uniqueProducts.add(match[1]);
     }
+  }
+  
+  // Eğer ID bulunamazsa, benzersiz ürün başlıklarını say
+  if (uniqueProducts.size === 0) {
+    const titlePatterns = [
+      /<baslik>([^<]+)<\/baslik>/gi,
+      /<name>([^<]+)<\/name>/gi,
+      /<title>([^<]+)<\/title>/gi
+    ];
+    
+    for (const pattern of titlePatterns) {
+      let match;
+      while ((match = pattern.exec(xmlText)) !== null) {
+        uniqueProducts.add(match[1]);
+      }
+    }
+  }
+  
+  // Son çare: ürün taglarını say ama benzersiz olanları
+  let productCount = uniqueProducts.size;
+  if (productCount === 0) {
+    const urunTags = xmlText.match(/<urun[^>]*>/gi) || [];
+    productCount = urunTags.length;
   }
   
   // Varyant analizi
@@ -141,9 +167,15 @@ function analyzeXML(xmlText) {
                       (xmlText.match(/<variant[^>]*>/gi) || []).length;
   
   return {
-    products: maxProducts,
+    products: productCount,
     variants: variantCount,
-    structure: detectedStructure
+    structure: 'urun', // Sentos XML yapısı
+    uniqueIds: uniqueProducts.size,
+    debug: {
+      urunTags: (xmlText.match(/<urun[^>]*>/gi) || []).length,
+      productTags: (xmlText.match(/<product[^>]*>/gi) || []).length,
+      itemTags: (xmlText.match(/<item[^>]*>/gi) || []).length
+    }
   };
 }
 
