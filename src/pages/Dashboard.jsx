@@ -9,6 +9,7 @@ const Dashboard = () => {
     google: { status: 'pending', data: {} }
   });
   const [syncStatus, setSyncStatus] = useState('idle');
+  const [syncDetails, setSyncDetails] = useState(null);
 
   // Sayfa yüklendiğinde otomatik bağlantı testi yap
   useEffect(() => {
@@ -67,22 +68,48 @@ const Dashboard = () => {
 
   const startSync = async () => {
     setSyncStatus('running');
+    setSyncDetails(null);
     
     try {
+      // API bilgilerini localStorage'dan al
+      const syncRequest = {
+        xmlUrl: localStorage.getItem('xml_url'),
+        storeUrl: localStorage.getItem('shopify_store_url'),
+        accessToken: localStorage.getItem('shopify_access_token'),
+        apiKey: localStorage.getItem('shopify_api_key')
+      };
+      
       const response = await fetch('/api/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({})
+        body: JSON.stringify(syncRequest)
       });
       
       if (!response.ok) throw new Error('Sync failed');
       const data = await response.json();
       
       setSyncStatus('completed');
-      alert(`Senkronizasyon tamamlandı! ${data.data.productsUpdated} ürün güncellendi, ${data.data.productsCreated} yeni ürün eklendi.`);
+      setSyncDetails(data.data);
+      
+      // Detaylı sonuç göster
+      const summary = `
+🎉 Senkronizasyon Tamamlandı!
+
+📊 Özet:
+• ${data.data.productsCreated} yeni ürün eklendi
+• ${data.data.productsUpdated} ürün güncellendi  
+• ${data.data.productsSkipped} ürün atlandı
+• ${data.data.errors.length} hata oluştu
+
+⏱️ Süre: ${data.data.duration}
+📅 Tarih: ${new Date(data.data.timestamp).toLocaleString('tr-TR')}
+      `;
+      
+      alert(summary);
     } catch (error) {
       setSyncStatus('failed');
-      alert('Senkronizasyon başarısız oldu: ' + error.message);
+      setSyncDetails({ error: error.message });
+      alert('❌ Senkronizasyon başarısız oldu: ' + error.message);
     }
   };
 
@@ -275,11 +302,96 @@ const Dashboard = () => {
           </div>
         )}
         
+        {syncStatus === 'completed' && syncDetails && (
+          <div>
+            <button onClick={() => setSyncStatus('idle')} className="btn btn-success">
+              ✅ Senkronizasyon Tamamlandı - Yeniden Başlat
+            </button>
+            
+            <div style={{marginTop: '12px', padding: '12px', background: '#f0f9f4', border: '1px solid #bbf7d0', borderRadius: '8px'}}>
+              <h4 style={{margin: '0 0 8px 0', color: '#059669'}}>📊 Senkronizasyon Sonuçları</h4>
+              
+              <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px', marginBottom: '12px'}}>
+                <div style={{background: 'white', padding: '8px', borderRadius: '4px', textAlign: 'center'}}>
+                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#059669'}}>{syncDetails.productsCreated}</div>
+                  <div style={{fontSize: '12px', color: '#666'}}>Yeni Ürün</div>
+                </div>
+                <div style={{background: 'white', padding: '8px', borderRadius: '4px', textAlign: 'center'}}>
+                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#0369a1'}}>{syncDetails.productsUpdated}</div>
+                  <div style={{fontSize: '12px', color: '#666'}}>Güncellenen</div>
+                </div>
+                <div style={{background: 'white', padding: '8px', borderRadius: '4px', textAlign: 'center'}}>
+                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#9333ea'}}>{syncDetails.productsSkipped}</div>
+                  <div style={{fontSize: '12px', color: '#666'}}>Atlanan</div>
+                </div>
+                <div style={{background: 'white', padding: '8px', borderRadius: '4px', textAlign: 'center'}}>
+                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#dc2626'}}>{syncDetails.errors?.length || 0}</div>
+                  <div style={{fontSize: '12px', color: '#666'}}>Hata</div>
+                </div>
+              </div>
+              
+              <div style={{fontSize: '14px', marginBottom: '8px'}}>
+                <strong>⏱️ Süre:</strong> {syncDetails.duration} | 
+                <strong> 📅 Tarih:</strong> {new Date(syncDetails.timestamp).toLocaleString('tr-TR')}
+              </div>
+              
+              {syncDetails.details && syncDetails.details.length > 0 && (
+                <details style={{fontSize: '12px', marginTop: '8px'}}>
+                  <summary style={{cursor: 'pointer', fontWeight: 'bold'}}>🔍 İşlem Detayları ({syncDetails.details.length})</summary>
+                  <div style={{maxHeight: '150px', overflowY: 'auto', marginTop: '8px', background: 'white', padding: '8px', borderRadius: '4px'}}>
+                    {syncDetails.details.map((detail, index) => (
+                      <div key={index} style={{marginBottom: '4px', padding: '4px', borderBottom: '1px solid #f3f4f6'}}>
+                        <span style={{
+                          display: 'inline-block',
+                          padding: '2px 6px',
+                          borderRadius: '3px',
+                          fontSize: '10px',
+                          marginRight: '8px',
+                          background: detail.action === 'created' ? '#dcfce7' : 
+                                   detail.action === 'updated' ? '#dbeafe' : '#fef3c7',
+                          color: detail.action === 'created' ? '#166534' : 
+                                detail.action === 'updated' ? '#1e40af' : '#92400e'
+                        }}>
+                          {detail.action.toUpperCase()}
+                        </span>
+                        <span style={{fontWeight: 'bold'}}>ID {detail.xmlId}:</span> {detail.title.substring(0, 40)}...
+                        {detail.changes && (
+                          <div style={{marginLeft: '60px', color: '#666', fontSize: '10px'}}>
+                            {detail.changes.join(', ')}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+              
+              {syncDetails.errors && syncDetails.errors.length > 0 && (
+                <details style={{fontSize: '12px', marginTop: '8px'}}>
+                  <summary style={{cursor: 'pointer', fontWeight: 'bold', color: '#dc2626'}}>❌ Hatalar ({syncDetails.errors.length})</summary>
+                  <div style={{maxHeight: '100px', overflowY: 'auto', marginTop: '8px', background: '#fef2f2', padding: '8px', borderRadius: '4px'}}>
+                    {syncDetails.errors.map((error, index) => (
+                      <div key={index} style={{marginBottom: '4px', color: '#dc2626', fontSize: '11px'}}>
+                        {error}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          </div>
+        )}
+        
         {syncStatus === 'failed' && (
           <div>
             <button onClick={() => setSyncStatus('idle')} className="btn btn-danger">
               ❌ Senkronizasyon Başarısız - Tekrar Dene
             </button>
+            {syncDetails && syncDetails.error && (
+              <div style={{marginTop: '8px', padding: '8px', background: '#fef2f2', borderRadius: '4px', color: '#dc2626', fontSize: '14px'}}>
+                <strong>Hata:</strong> {syncDetails.error}
+              </div>
+            )}
           </div>
         )}
       </div>
