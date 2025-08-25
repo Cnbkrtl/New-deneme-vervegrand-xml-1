@@ -161,13 +161,15 @@ async function handleXML(event, headers) {
       body: JSON.stringify({ 
         status: 'success', 
         data: {
-          productCount: analysis.products,
-          variantCount: analysis.variants,
-          xmlSize: xmlText.length,
+          products: analysis.products,
+          uniqueProducts: analysis.uniqueProducts,
+          duplicateCount: analysis.duplicateCount,
+          structure: analysis.structure,
+          sampleProducts: analysis.sampleProducts,
+          xmlInfo: analysis.xmlInfo,
           lastUpdated: new Date().toISOString(),
           connected: true,
-          healthy: analysis.products > 0,
-          structure: analysis.structure
+          healthy: analysis.products > 0
         }
       })
     };
@@ -187,56 +189,97 @@ function analyzeXML(xmlText) {
   // XML'deki <Urun> etiketlerini say (debug sonuçlarına göre)
   const urunCount = (xmlText.match(/<Urun[\s>]/gi) || []).length;
   
-  // Örnek ürün bilgilerini çıkar
+  // Benzersiz ürünleri tespit et
+  const uniqueProducts = new Set();
+  const uniqueStockCodes = new Set();
+  const duplicateProducts = [];
+  
+  // Örnek ürün bilgilerini çıkar ve duplicate kontrolü yap
   const sampleProducts = [];
   const urunRegex = /<Urun[\s>][\s\S]*?<\/Urun>/gi;
   let match;
   let sampleCount = 0;
+  let processedCount = 0;
   
-  while ((match = urunRegex.exec(xmlText)) && sampleCount < 3) {
+  while ((match = urunRegex.exec(xmlText))) {
     const productXml = match[0];
+    processedCount++;
     
     // Ürün bilgilerini çıkar
     const getId = (xml) => {
       const idMatch = xml.match(/<id>(.*?)<\/id>/i);
-      return idMatch ? idMatch[1] : 'N/A';
+      return idMatch ? idMatch[1].trim() : null;
     };
     
     const getStokKodu = (xml) => {
       const stokMatch = xml.match(/<stok_kodu><!\[CDATA\[(.*?)\]\]><\/stok_kodu>/i);
-      return stokMatch ? stokMatch[1] : 'N/A';
+      return stokMatch ? stokMatch[1].trim() : null;
     };
     
     const getUrunIsmi = (xml) => {
       const isimMatch = xml.match(/<urunismi><!\[CDATA\[(.*?)\]\]><\/urunismi>/i);
-      return isimMatch ? isimMatch[1] : 'N/A';
+      return isimMatch ? isimMatch[1].trim() : null;
     };
     
     const getKategori = (xml) => {
       const kategoriMatch = xml.match(/<kategori_ismi><!\[CDATA\[(.*?)\]\]><\/kategori_ismi>/i);
-      return kategoriMatch ? kategoriMatch[1] : 'N/A';
+      return kategoriMatch ? kategoriMatch[1].trim() : null;
     };
     
-    sampleProducts.push({
-      id: getId(productXml),
-      stokKodu: getStokKodu(productXml),
-      urunIsmi: getUrunIsmi(productXml),
-      kategori: getKategori(productXml)
-    });
+    const productId = getId(productXml);
+    const stokKodu = getStokKodu(productXml);
+    const urunIsmi = getUrunIsmi(productXml);
+    const kategori = getKategori(productXml);
     
-    sampleCount++;
+    // Benzersiz ürün kontrolü (ID ve stok kodu ile)
+    const uniqueKey = `${productId}_${stokKodu}`;
+    
+    if (productId && !uniqueProducts.has(productId)) {
+      uniqueProducts.add(productId);
+      
+      if (stokKodu && !uniqueStockCodes.has(stokKodu)) {
+        uniqueStockCodes.add(stokKodu);
+      }
+      
+      // İlk 5 benzersiz ürünü örnek olarak al
+      if (sampleCount < 5) {
+        sampleProducts.push({
+          id: productId,
+          stokKodu: stokKodu || 'N/A',
+          urunIsmi: urunIsmi || 'N/A',
+          kategori: kategori || 'N/A'
+        });
+        sampleCount++;
+      }
+    } else if (productId && uniqueProducts.has(productId)) {
+      // Duplicate ürün bulundu
+      duplicateProducts.push({
+        id: productId,
+        stokKodu: stokKodu,
+        position: processedCount
+      });
+    }
   }
   
   return {
-    products: urunCount,
+    products: urunCount, // Toplam XML'deki ürün sayısı
+    uniqueProducts: uniqueProducts.size, // Benzersiz ürün sayısı (ID'ye göre)
+    uniqueStockCodes: uniqueStockCodes.size, // Benzersiz stok kodu sayısı
+    duplicateCount: duplicateProducts.length, // Duplicate ürün sayısı
     structure: 'Urunler/Urun', // Debug sonuçlarına göre
     sampleProducts: sampleProducts,
+    duplicateExamples: duplicateProducts.slice(0, 5), // İlk 5 duplicate örneği
     xmlInfo: {
       totalSize: xmlText.length,
       hasStockCodes: xmlText.includes('<stok_kodu>'),
       hasCDATA: xmlText.includes('<![CDATA['),
       hasCategories: xmlText.includes('<kategori_ismi>'),
       encoding: xmlText.includes('utf-8') ? 'UTF-8' : 'Unknown'
+    },
+    analysis: {
+      totalProcessed: processedCount,
+      duplicateRatio: ((duplicateProducts.length / urunCount) * 100).toFixed(1) + '%',
+      uniqueRatio: ((uniqueProducts.size / urunCount) * 100).toFixed(1) + '%'
     },
     debug: {
       totalUrunTags: urunCount,

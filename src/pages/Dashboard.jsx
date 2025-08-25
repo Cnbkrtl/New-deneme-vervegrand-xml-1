@@ -142,10 +142,25 @@ const Dashboard = () => {
           </div>
           {connectionStatus.xml.data && connectionStatus.xml.data.products !== undefined && (
             <div>
-              <p><strong>Toplam Ürün:</strong> {connectionStatus.xml.data.products || 0}</p>
+              <p><strong>📊 Ürün İstatistikleri:</strong></p>
+              <div style={{marginLeft: '16px', marginBottom: '12px'}}>
+                <p><strong>Toplam XML Ürün:</strong> {connectionStatus.xml.data.products || 0}</p>
+                <p><strong>Benzersiz Ürün:</strong> {connectionStatus.xml.data.uniqueProducts || 0}</p>
+                <p><strong>Benzersiz Stok Kodu:</strong> {connectionStatus.xml.data.uniqueStockCodes || 0}</p>
+                <p><strong>Duplicate Ürün:</strong> {connectionStatus.xml.data.duplicateCount || 0}</p>
+              </div>
+              
               <p><strong>XML Yapısı:</strong> {connectionStatus.xml.data.structure || 'Bilinmiyor'}</p>
               <p><strong>XML Boyutu:</strong> {connectionStatus.xml.data.xmlInfo?.totalSize ? (connectionStatus.xml.data.xmlInfo.totalSize / 1024 / 1024).toFixed(2) + ' MB' : 'Bilinmiyor'}</p>
               <p><strong>Encoding:</strong> {connectionStatus.xml.data.xmlInfo?.encoding || 'Bilinmiyor'}</p>
+              
+              {connectionStatus.xml.data.analysis && (
+                <div style={{marginTop: '8px', fontSize: '14px', background: '#f8f9fa', padding: '8px', borderRadius: '4px'}}>
+                  <p><strong>📈 Analiz:</strong></p>
+                  <p>Benzersiz Oran: {connectionStatus.xml.data.analysis.uniqueRatio}</p>
+                  <p>Duplicate Oran: {connectionStatus.xml.data.analysis.duplicateRatio}</p>
+                </div>
+              )}
               
               {connectionStatus.xml.data.xmlInfo && (
                 <div style={{marginTop: '8px', fontSize: '14px'}}>
@@ -160,13 +175,26 @@ const Dashboard = () => {
               
               {connectionStatus.xml.data.sampleProducts && connectionStatus.xml.data.sampleProducts.length > 0 && (
                 <details style={{marginTop: '8px', fontSize: '12px', color: '#666'}}>
-                  <summary>Örnek Ürünler (İlk 3)</summary>
+                  <summary>🔍 Benzersiz Ürün Örnekleri (İlk 5)</summary>
                   {connectionStatus.xml.data.sampleProducts.map((product, index) => (
                     <div key={index} style={{marginTop: '8px', padding: '8px', background: '#f5f5f5', borderRadius: '4px'}}>
                       <p><strong>ID:</strong> {product.id}</p>
                       <p><strong>Stok Kodu:</strong> {product.stokKodu}</p>
                       <p><strong>Ürün Adı:</strong> {product.urunIsmi}</p>
                       <p><strong>Kategori:</strong> {product.kategori}</p>
+                    </div>
+                  ))}
+                </details>
+              )}
+              
+              {connectionStatus.xml.data.duplicateExamples && connectionStatus.xml.data.duplicateExamples.length > 0 && (
+                <details style={{marginTop: '8px', fontSize: '12px', color: '#e74c3c'}}>
+                  <summary>⚠️ Duplicate Ürün Örnekleri</summary>
+                  {connectionStatus.xml.data.duplicateExamples.map((dup, index) => (
+                    <div key={index} style={{marginTop: '8px', padding: '8px', background: '#fdf2f2', borderRadius: '4px', border: '1px solid #fecaca'}}>
+                      <p><strong>ID:</strong> {dup.id}</p>
+                      <p><strong>Stok Kodu:</strong> {dup.stokKodu}</p>
+                      <p><strong>Pozisyon:</strong> {dup.position}. sırada</p>
                     </div>
                   ))}
                 </details>
