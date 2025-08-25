@@ -10,6 +10,11 @@ const Dashboard = () => {
   });
   const [syncStatus, setSyncStatus] = useState('idle');
 
+  // Sayfa yüklendiğinde otomatik bağlantı testi yap
+  useEffect(() => {
+    testConnections();
+  }, []);
+
   const handleLogout = () => {
     localStorage.removeItem('authToken');
     navigate('/login');
