@@ -1,3 +1,5 @@
+const axios = require('axios');
+
 exports.handler = async (event, context) => {
   // CORS headers
   const headers = {
@@ -52,26 +54,20 @@ async function handleShopify(event, method) {
   };
 
   if (method === 'POST') {
-    // Test Shopify connection
     const { apiKey, apiSecret, storeUrl, accessToken } = JSON.parse(event.body);
-    
     try {
-      // In a real implementation, you would make actual API calls to Shopify
-      // For now, we'll simulate a successful connection
-      const response = {
-        status: 'connected',
-        data: {
-          storeName: 'Demo Store',
-          productCount: 156,
-          variantCount: 324,
-          stockCount: 1234
-        }
-      };
-
+      // Shopify mağaza bilgisi çekme
+      const shopUrl = `https://${storeUrl}/admin/api/2023-01/shop.json`;
+      const response = await axios.get(shopUrl, {
+        headers: {
+          'X-Shopify-Access-Token': accessToken,
+          'Content-Type': 'application/json',
+        },
+      });
       return {
         statusCode: 200,
         headers,
-        body: JSON.stringify(response),
+        body: JSON.stringify({ status: 'connected', data: response.data.shop }),
       };
     } catch (error) {
       return {
@@ -81,7 +77,6 @@ async function handleShopify(event, method) {
       };
     }
   }
-
   return {
     statusCode: 405,
     headers,
@@ -94,29 +89,14 @@ async function handleXML(event, method) {
     'Access-Control-Allow-Origin': '*',
     'Content-Type': 'application/json',
   };
-
   if (method === 'POST') {
-    // Test XML connection and parse
     const { xmlUrl } = JSON.parse(event.body);
-    
     try {
-      // In a real implementation, you would fetch and parse the XML
-      // For now, we'll simulate a successful XML parse
-      const response = {
-        status: 'connected',
-        data: {
-          version: '2.1',
-          format: 'Sentos XML',
-          productCount: 142,
-          variantCount: 298,
-          stockCount: 1156
-        }
-      };
-
+      const response = await axios.get(xmlUrl);
       return {
         statusCode: 200,
         headers,
-        body: JSON.stringify(response),
+        body: JSON.stringify({ status: 'connected', data: response.data }),
       };
     } catch (error) {
       return {
@@ -126,7 +106,6 @@ async function handleXML(event, method) {
       };
     }
   }
-
   return {
     statusCode: 405,
     headers,
@@ -139,26 +118,16 @@ async function handleGoogle(event, method) {
     'Access-Control-Allow-Origin': '*',
     'Content-Type': 'application/json',
   };
-
   if (method === 'POST') {
-    // Test Google Sheets connection
     const { clientId, apiKey, spreadsheetId } = JSON.parse(event.body);
-    
     try {
-      // In a real implementation, you would authenticate with Google API
-      // For now, we'll simulate a successful connection
-      const response = {
-        status: 'connected',
-        data: {
-          sheetsConnected: true,
-          sheetName: 'Product Data'
-        }
-      };
-
+      // Google Sheets API test (public sheet için)
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?key=${apiKey}`;
+      const response = await axios.get(url);
       return {
         statusCode: 200,
         headers,
-        body: JSON.stringify(response),
+        body: JSON.stringify({ status: 'connected', data: response.data }),
       };
     } catch (error) {
       return {
@@ -168,7 +137,6 @@ async function handleGoogle(event, method) {
       };
     }
   }
-
   return {
     statusCode: 405,
     headers,
