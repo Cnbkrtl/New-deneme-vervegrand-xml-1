@@ -178,6 +178,18 @@ const Dashboard = () => {
 • ${data.data.productsSkipped} ürün atlandı
 • ${data.data.errors.length} hata oluştu
 
+🔗 Eşleşme Detayları:
+• SKU ile eşleşen: ${data.data.details?.skuMatches || 0} ürün
+• Title ile eşleşen: ${data.data.details?.titleMatches || 0} ürün
+• Yeni ürün: ${data.data.details?.newProducts || 0} ürün
+• Duplicate: ${data.data.details?.duplicates || 0} ürün
+
+📈 İstatistikler:
+• XML'de bulunan: ${data.data.xmlProductsFound} ürün
+• Benzersiz ürün: ${data.data.uniqueProducts} ürün
+• Başarı oranı: ${data.data.details?.successRate || '100%'}
+• XML boyutu: ${data.data.details?.xmlSize || 'bilinmiyor'}
+
 ⏱️ Süre: ${data.data.duration}
 📅 Tarih: ${new Date(data.data.timestamp).toLocaleString('tr-TR')}
       `;
@@ -437,7 +449,7 @@ ${fastMode ?
               onChange={(e) => setFastMode(e.target.checked)}
             />
             <label className="form-check-label" htmlFor="fastMode">
-              ⚡ Hızlı Mod (Büyük XML dosyaları için - sadece ilk 3 ürün sync'i, 15 saniye timeout)
+              ⚡ Hızlı Mod (Büyük XML dosyaları için - tüm ürünleri işler, eşleşme kontrolü yapar, 25s timeout)
             </label>
           </div>
         </div>
@@ -480,20 +492,56 @@ ${fastMode ?
               
               <div style={{display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px', marginBottom: '12px'}}>
                 <div style={{background: 'white', padding: '8px', borderRadius: '4px', textAlign: 'center'}}>
-                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#059669'}}>{syncDetails.productsCreated}</div>
+                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#059669'}}>{syncDetails.productsCreated || 0}</div>
                   <div style={{fontSize: '12px', color: '#666'}}>Yeni Ürün</div>
                 </div>
                 <div style={{background: 'white', padding: '8px', borderRadius: '4px', textAlign: 'center'}}>
-                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#0369a1'}}>{syncDetails.productsUpdated}</div>
+                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#0369a1'}}>{syncDetails.productsUpdated || 0}</div>
                   <div style={{fontSize: '12px', color: '#666'}}>Güncellenen</div>
                 </div>
                 <div style={{background: 'white', padding: '8px', borderRadius: '4px', textAlign: 'center'}}>
-                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#9333ea'}}>{syncDetails.productsSkipped}</div>
+                  <div style={{fontSize: '20px', fontWeight: 'bold', color: '#9333ea'}}>{syncDetails.productsSkipped || 0}</div>
                   <div style={{fontSize: '12px', color: '#666'}}>Atlanan</div>
                 </div>
                 <div style={{background: 'white', padding: '8px', borderRadius: '4px', textAlign: 'center'}}>
                   <div style={{fontSize: '20px', fontWeight: 'bold', color: '#dc2626'}}>{syncDetails.errors?.length || 0}</div>
                   <div style={{fontSize: '12px', color: '#666'}}>Hata</div>
+                </div>
+              </div>
+              
+              {/* Eşleşme Detayları */}
+              {syncDetails.details && (
+                <div style={{marginBottom: '12px'}}>
+                  <h5 style={{margin: '0 0 8px 0', color: '#374151'}}>🔗 Eşleşme Detayları</h5>
+                  <div style={{display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '4px'}}>
+                    <div style={{background: 'white', padding: '6px', borderRadius: '4px', textAlign: 'center', fontSize: '12px'}}>
+                      <div style={{fontWeight: 'bold', color: '#059669'}}>{syncDetails.details.skuMatches || 0}</div>
+                      <div style={{color: '#666'}}>SKU Eşleşme</div>
+                    </div>
+                    <div style={{background: 'white', padding: '6px', borderRadius: '4px', textAlign: 'center', fontSize: '12px'}}>
+                      <div style={{fontWeight: 'bold', color: '#0369a1'}}>{syncDetails.details.titleMatches || 0}</div>
+                      <div style={{color: '#666'}}>Title Eşleşme</div>
+                    </div>
+                    <div style={{background: 'white', padding: '6px', borderRadius: '4px', textAlign: 'center', fontSize: '12px'}}>
+                      <div style={{fontWeight: 'bold', color: '#9333ea'}}>{syncDetails.details.newProducts || 0}</div>
+                      <div style={{color: '#666'}}>Yeni Ürün</div>
+                    </div>
+                    <div style={{background: 'white', padding: '6px', borderRadius: '4px', textAlign: 'center', fontSize: '12px'}}>
+                      <div style={{fontWeight: 'bold', color: '#dc2626'}}>{syncDetails.details.duplicates || 0}</div>
+                      <div style={{color: '#666'}}>Duplicate</div>
+                    </div>
+                  </div>
+                </div>
+              )}
+              
+              {/* İstatistik Bilgileri */}
+              <div style={{marginBottom: '12px'}}>
+                <h5 style={{margin: '0 0 8px 0', color: '#374151'}}>📈 İstatistikler</h5>
+                <div style={{fontSize: '13px', color: '#666'}}>
+                  <div><strong>XML'de bulunan:</strong> {syncDetails.xmlProductsFound || 0} ürün</div>
+                  <div><strong>Benzersiz ürün:</strong> {syncDetails.uniqueProducts || 0} ürün</div>
+                  <div><strong>Başarı oranı:</strong> {syncDetails.details?.successRate || 'Hesaplanıyor...'}</div>
+                  <div><strong>XML boyutu:</strong> {syncDetails.details?.xmlSize || 'Bilinmiyor'}</div>
                 </div>
               </div>
               
