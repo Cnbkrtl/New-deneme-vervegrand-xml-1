@@ -42,12 +42,26 @@ async function handleShopify(event, headers) {
   const { apiKey, apiSecret, storeUrl, accessToken } = JSON.parse(event.body);
   
   try {
-    const url = `https://${storeUrl}/admin/api/2023-01/shop.json`;
+    console.log('🏪 Shopify bağlantı testi:', storeUrl);
+    console.log('🔑 Access token var mı:', accessToken ? 'Evet' : 'Hayır');
+    
+    const url = `https://${storeUrl}/admin/api/2023-10/shop.json`;
+    console.log('🌐 Test URL:', url);
+    
     const response = await fetch(url, {
-      headers: { 'X-Shopify-Access-Token': accessToken }
+      headers: { 
+        'X-Shopify-Access-Token': accessToken,
+        'Content-Type': 'application/json'
+      }
     });
     
-    if (!response.ok) throw new Error(`Shopify API error: ${response.status}`);
+    console.log('📡 Shopify test response status:', response.status);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ Shopify API error:', errorText);
+      throw new Error(`Shopify API error: ${response.status} - ${errorText}`);
+    }
     const data = await response.json();
     
     const productsResponse = await fetch(`https://${storeUrl}/admin/api/2023-01/products/count.json`, {

@@ -182,8 +182,14 @@ async function handleSyncBatch(event, headers) {
     console.log(`✓ ${uniqueProducts.length} benzersiz ürün (${syncResults.details.duplicates} duplicate)`);
     
     // 5. Her ürün için eşleşme kontrolü ve sync
-    for (const product of uniqueProducts) {
+    console.log(`🔄 ${uniqueProducts.length} ürün için sync işlemi başlıyor...`);
+    
+    for (let i = 0; i < uniqueProducts.length; i++) {
+      const product = uniqueProducts[i];
+      
       try {
+        console.log(`\n--- Ürün ${i+1}/${uniqueProducts.length}: ${product.stokKodu} ---`);
+        
         // SKU ile eşleşme kontrolü
         let existingProduct = shopifyProducts.find(sp => 
           sp.variants && sp.variants.some(v => v.sku === product.stokKodu)
@@ -194,6 +200,7 @@ async function handleSyncBatch(event, headers) {
         if (existingProduct) {
           matchType = 'sku';
           syncResults.details.skuMatches++;
+          console.log(`🔗 SKU ile eşleşti: ${existingProduct.id}`);
         } else {
           // Title ile eşleşme kontrolü (%80+ benzerlik)
           existingProduct = shopifyProducts.find(sp => 
@@ -203,6 +210,9 @@ async function handleSyncBatch(event, headers) {
           if (existingProduct) {
             matchType = 'title';
             syncResults.details.titleMatches++;
+            console.log(`🔗 Title ile eşleşti: ${existingProduct.id} (${existingProduct.title})`);
+          } else {
+            console.log(`➕ Yeni ürün oluşturulacak`);
           }
         }
         
@@ -211,8 +221,10 @@ async function handleSyncBatch(event, headers) {
           const updateResult = await updateShopifyProduct(existingProduct, product, storeUrl, accessToken);
           if (updateResult.success) {
             syncResults.updated++;
+            console.log(`✅ Ürün güncellendi`);
           } else {
             syncResults.errors.push(`${product.stokKodu}: Update failed - ${updateResult.error}`);
+            console.log(`❌ Güncelleme başarısız: ${updateResult.error}`);
           }
         } else {
           // Yeni ürün oluştur
@@ -220,8 +232,10 @@ async function handleSyncBatch(event, headers) {
           if (createResult.success) {
             syncResults.created++;
             syncResults.details.newProducts++;
+            console.log(`✅ Yeni ürün oluşturuldu: ${createResult.productId}`);
           } else {
             syncResults.errors.push(`${product.stokKodu}: Create failed - ${createResult.error}`);
+            console.log(`❌ Oluşturma başarısız: ${createResult.error}`);
           }
         }
         
@@ -229,6 +243,7 @@ async function handleSyncBatch(event, headers) {
         await new Promise(resolve => setTimeout(resolve, 100));
         
       } catch (productError) {
+        console.error(`❌ Ürün işleme hatası ${product.stokKodu}:`, productError);
         syncResults.errors.push(`${product.stokKodu}: ${productError.message}`);
       }
     }
@@ -281,6 +296,8 @@ async function handleSyncBatch(event, headers) {
 // Shopify ürünlerini çek
 async function getShopifyProducts(storeUrl, accessToken) {
   try {
+    console.log('🏪 Shopify API çağrısı yapılıyor...', storeUrl);
+    
     const response = await fetch(`${storeUrl}/admin/api/2023-10/products.json?limit=250`, {
       headers: {
         'X-Shopify-Access-Token': accessToken,
@@ -288,12 +305,19 @@ async function getShopifyProducts(storeUrl, accessToken) {
       }
     });
     
-    if (!response.ok) throw new Error(`Shopify API error: ${response.status}`);
+    console.log('🏪 Shopify API response status:', response.status);
+    
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('🏪 Shopify API error:', errorText);
+      throw new Error(`Shopify API error: ${response.status} - ${errorText}`);
+    }
     
     const data = await response.json();
+    console.log(`🏪 Shopify'dan ${data.products?.length || 0} ürün çekildi`);
     return data.products || [];
   } catch (error) {
-    console.error('Shopify products fetch error:', error);
+    console.error('❌ Shopify products fetch error:', error);
     return [];
   }
 }
@@ -342,13 +366,15 @@ function levenshteinDistance(str1, str2) {
 // Shopify ürün güncelle
 async function updateShopifyProduct(existingProduct, xmlProduct, storeUrl, accessToken) {
   try {
+    console.log(`🔄 Shopify ürün güncelleniyor: ${existingProduct.id} - ${xmlProduct.stokKodu}`);
+    
     const updatedProduct = {
       id: existingProduct.id,
       title: xmlProduct.urunAdi,
       body_html: xmlProduct.aciklama || '',
       variants: existingProduct.variants.map(variant => ({
         ...variant,
-        price: xmlProduct.fiyat,
+        price: xmlProduct.fiyat.toString(),
         inventory_quantity: xmlProduct.stok
       }))
     };
@@ -362,13 +388,18 @@ async function updateShopifyProduct(existingProduct, xmlProduct, storeUrl, acces
       body: JSON.stringify({ product: updatedProduct })
     });
     
+    console.log(`🔄 Shopify update response status: ${response.status}`);
+    
     if (response.ok) {
+      console.log(`✅ Ürün başarıyla güncellendi: ${existingProduct.id}`);
       return { success: true };
     } else {
       const errorText = await response.text();
-      return { success: false, error: errorText.substring(0, 100) };
+      console.error(`❌ Shopify update error: ${response.status} - ${errorText}`);
+      return { success: false, error: `${response.status}: ${errorText.substring(0, 200)}` };
     }
   } catch (error) {
+    console.error(`❌ Update product error for ${xmlProduct.stokKodu}:`, error);
     return { success: false, error: error.message };
   }
 }
@@ -376,6 +407,8 @@ async function updateShopifyProduct(existingProduct, xmlProduct, storeUrl, acces
 // Shopify ürün oluştur
 async function createShopifyProduct(xmlProduct, storeUrl, accessToken) {
   try {
+    console.log(`🛍️ Shopify'a ürün oluşturuluyor: ${xmlProduct.stokKodu} - ${xmlProduct.urunAdi}`);
+    
     const newProduct = {
       title: xmlProduct.urunAdi,
       body_html: xmlProduct.aciklama || '',
@@ -384,7 +417,7 @@ async function createShopifyProduct(xmlProduct, storeUrl, accessToken) {
       status: 'active',
       tags: xmlProduct.kategori ? [xmlProduct.kategori] : [],
       variants: [{
-        price: xmlProduct.fiyat,
+        price: xmlProduct.fiyat.toString(),
         sku: xmlProduct.stokKodu,
         inventory_quantity: xmlProduct.stok,
         barcode: xmlProduct.barkod || '',
@@ -392,6 +425,8 @@ async function createShopifyProduct(xmlProduct, storeUrl, accessToken) {
         weight_unit: 'kg'
       }]
     };
+    
+    console.log('🛍️ Shopify product data:', JSON.stringify(newProduct, null, 2));
     
     const response = await fetch(`${storeUrl}/admin/api/2023-10/products.json`, {
       method: 'POST',
@@ -402,13 +437,19 @@ async function createShopifyProduct(xmlProduct, storeUrl, accessToken) {
       body: JSON.stringify({ product: newProduct })
     });
     
+    console.log(`🛍️ Shopify create response status: ${response.status}`);
+    
     if (response.ok) {
-      return { success: true };
+      const responseData = await response.json();
+      console.log(`✅ Ürün başarıyla oluşturuldu: ${responseData.product?.id}`);
+      return { success: true, productId: responseData.product?.id };
     } else {
       const errorText = await response.text();
-      return { success: false, error: errorText.substring(0, 100) };
+      console.error(`❌ Shopify create error: ${response.status} - ${errorText}`);
+      return { success: false, error: `${response.status}: ${errorText.substring(0, 200)}` };
     }
   } catch (error) {
+    console.error(`❌ Create product error for ${xmlProduct.stokKodu}:`, error);
     return { success: false, error: error.message };
   }
 }

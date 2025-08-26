@@ -67,6 +67,11 @@ const Settings = () => {
     if (type === 'shopify') {
       endpoint = '/api/shopify';
       body = shopifySettings;
+      console.log('🏪 Shopify test data:', {
+        storeUrl: shopifySettings.storeUrl,
+        hasAccessToken: !!shopifySettings.accessToken,
+        hasApiKey: !!shopifySettings.apiKey
+      });
     }
     if (type === 'xml') {
       endpoint = '/api/xml';

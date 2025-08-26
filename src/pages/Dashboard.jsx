@@ -198,11 +198,16 @@ const Dashboard = () => {
     } catch (error) {
       setSyncStatus('failed');
       
-      console.error('🚨 Sync Error Details:', {
+      console.log('🚨 Sync Error Details:', {
         name: error.name,
         message: error.message,
         stack: error.stack
       });
+      
+      // Response detaylarını da logla
+      if (error.message.includes('Sync failed')) {
+        console.log('🔍 Muhtemelen Shopify API sorunu - Settings sayfasında API bilgilerini kontrol edin');
+      }
       
       let errorMessage = error.message;
       let errorDetails = '';
