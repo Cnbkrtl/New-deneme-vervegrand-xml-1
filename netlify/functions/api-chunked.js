@@ -107,6 +107,12 @@ async function handleSyncBatch(event, headers) {
     const { xmlUrl, storeUrl, accessToken, apiKey } = JSON.parse(event.body);
     
     console.log(`⚡ Full batch sync başlıyor (tüm ürünler)...`);
+    console.log(`🔑 API bilgileri:`, {
+      storeUrl,
+      hasAccessToken: !!accessToken,
+      hasApiKey: !!apiKey,
+      xmlUrl: xmlUrl ? 'OK' : 'YOK'
+    });
     const startTime = Date.now();
     
     // 1. Tüm XML'i çek (büyük dosyalar için chunked)
@@ -184,11 +190,22 @@ async function handleSyncBatch(event, headers) {
     // 5. Her ürün için eşleşme kontrolü ve sync
     console.log(`🔄 ${uniqueProducts.length} ürün için sync işlemi başlıyor...`);
     
-    for (let i = 0; i < uniqueProducts.length; i++) {
-      const product = uniqueProducts[i];
+    // Test için sadece ilk 5 ürünü işle
+    const testProducts = uniqueProducts.slice(0, 5);
+    console.log(`🧪 Test için sadece ilk ${testProducts.length} ürün işlenecek`);
+    
+    for (let i = 0; i < testProducts.length; i++) {
+      const product = testProducts[i];
       
       try {
-        console.log(`\n--- Ürün ${i+1}/${uniqueProducts.length}: ${product.stokKodu} ---`);
+        console.log(`\n--- Ürün ${i+1}/${testProducts.length}: ${product.stokKodu} ---`);
+        console.log(`📦 Ürün detayları:`, {
+          stokKodu: product.stokKodu,
+          urunAdi: product.urunAdi?.substring(0, 50),
+          fiyat: product.fiyat,
+          stok: product.stok,
+          kategori: product.kategori
+        });
         
         // SKU ile eşleşme kontrolü
         let existingProduct = shopifyProducts.find(sp => 
@@ -273,7 +290,8 @@ async function handleSyncBatch(event, headers) {
             titleMatches: syncResults.details.titleMatches,
             newProducts: syncResults.details.newProducts,
             duplicates: syncResults.details.duplicates,
-            successRate: ((syncResults.created + syncResults.updated) / uniqueProducts.length * 100).toFixed(1) + '%'
+            successRate: testProducts.length > 0 ? ((syncResults.created + syncResults.updated) / testProducts.length * 100).toFixed(1) + '%' : '0%',
+            testMode: `İlk ${testProducts.length} ürün test edildi`
           }
         }
       })
@@ -296,9 +314,13 @@ async function handleSyncBatch(event, headers) {
 // Shopify ürünlerini çek
 async function getShopifyProducts(storeUrl, accessToken) {
   try {
-    console.log('🏪 Shopify API çağrısı yapılıyor...', storeUrl);
+    // Store URL'i normalize et
+    const normalizedStoreUrl = storeUrl.startsWith('http') ? storeUrl : `https://${storeUrl}`;
+    const apiUrl = `${normalizedStoreUrl}/admin/api/2023-10/products.json?limit=250`;
     
-    const response = await fetch(`${storeUrl}/admin/api/2023-10/products.json?limit=250`, {
+    console.log('🏪 Shopify API çağrısı yapılıyor...', apiUrl);
+    
+    const response = await fetch(apiUrl, {
       headers: {
         'X-Shopify-Access-Token': accessToken,
         'Content-Type': 'application/json'
@@ -409,26 +431,33 @@ async function createShopifyProduct(xmlProduct, storeUrl, accessToken) {
   try {
     console.log(`🛍️ Shopify'a ürün oluşturuluyor: ${xmlProduct.stokKodu} - ${xmlProduct.urunAdi}`);
     
+    // Store URL'i normalize et
+    const normalizedStoreUrl = storeUrl.startsWith('http') ? storeUrl : `https://${storeUrl}`;
+    const apiUrl = `${normalizedStoreUrl}/admin/api/2023-10/products.json`;
+    console.log('🌐 Shopify API URL:', apiUrl);
+    
     const newProduct = {
-      title: xmlProduct.urunAdi,
+      title: xmlProduct.urunAdi || 'Untitled Product',
       body_html: xmlProduct.aciklama || '',
       vendor: 'XML Import',
       product_type: xmlProduct.kategori || 'General',
       status: 'active',
       tags: xmlProduct.kategori ? [xmlProduct.kategori] : [],
       variants: [{
-        price: xmlProduct.fiyat.toString(),
-        sku: xmlProduct.stokKodu,
-        inventory_quantity: xmlProduct.stok,
+        price: xmlProduct.fiyat > 0 ? xmlProduct.fiyat.toString() : '0.01',
+        sku: xmlProduct.stokKodu || '',
+        inventory_quantity: xmlProduct.stok || 0,
         barcode: xmlProduct.barkod || '',
         weight: 0,
-        weight_unit: 'kg'
+        weight_unit: 'kg',
+        requires_shipping: true,
+        taxable: true
       }]
     };
     
     console.log('🛍️ Shopify product data:', JSON.stringify(newProduct, null, 2));
     
-    const response = await fetch(`${storeUrl}/admin/api/2023-10/products.json`, {
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: {
         'X-Shopify-Access-Token': accessToken,

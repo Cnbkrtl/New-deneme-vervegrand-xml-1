@@ -547,6 +547,9 @@ ${fastMode ?
                   <div><strong>Benzersiz ürün:</strong> {syncDetails.uniqueProducts || 0} ürün</div>
                   <div><strong>Başarı oranı:</strong> {syncDetails.details?.successRate || 'Hesaplanıyor...'}</div>
                   <div><strong>XML boyutu:</strong> {syncDetails.details?.xmlSize || 'Bilinmiyor'}</div>
+                  {syncDetails.details?.testMode && (
+                    <div><strong>⚠️ Test Mode:</strong> {syncDetails.details.testMode}</div>
+                  )}
                 </div>
               </div>
               
