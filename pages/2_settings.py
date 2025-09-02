@@ -1,9 +1,11 @@
+# pages/2_⚙️_Settings.py
+
 import streamlit as st
-from config_manager import save_all_keys
+from config_manager import save_user_keys # Değişiklik burada
 from shopify_sync import ShopifyAPI, SentosAPI
 
 # Giriş kontrolü
-if not st.session_state.get("logged_in"):
+if not st.session_state.get("authentication_status"):
     st.error("Please log in to access this page.")
     st.stop()
 
@@ -11,11 +13,10 @@ if not st.session_state.get("logged_in"):
 st.markdown("""
 <div class="main-header">
     <h1>⚙️ Settings</h1>
-    <p>Configure API connections. Settings are encrypted and saved automatically.</p>
+    <p>Configure API connections. Settings are encrypted and saved automatically for your user account.</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Test fonksiyonları (değişiklik yok)
 def test_shopify_connection(store, token):
     try:
         api = ShopifyAPI(store, token)
@@ -42,7 +43,6 @@ def test_sentos_connection(url, key, secret):
         st.error(f"❌ Sentos Connection failed: {e}")
 
 # --- AYAR FORMU ---
-# Formun tamamı yeniden düzenlendi
 with st.form("settings_form"):
     col1, col2 = st.columns(2)
     
@@ -86,8 +86,9 @@ with st.form("settings_form"):
     submitted = st.form_submit_button("💾 Save & Test Connections", use_container_width=True, type="primary")
 
     if submitted:
-        # 1. Ayarları Kaydet
-        if save_all_keys(
+        username = st.session_state["username"]
+        if save_user_keys(
+            username,  # Değişiklik burada: Hangi kullanıcı için kaydedileceğini belirtiyoruz
             shopify_store=shopify_store,
             shopify_token=shopify_token,
             sentos_api_url=sentos_api_url,
@@ -95,9 +96,9 @@ with st.form("settings_form"):
             sentos_api_secret=sentos_api_secret,
             sentos_cookie=sentos_cookie
         ):
-            st.success("✅ All settings saved and encrypted!")
+            st.success(f"✅ Settings for user '{username}' saved and encrypted!")
             
-            # 2. Session state'i yeni değerlerle güncelle
+            # Session state'i yeni değerlerle güncelle
             st.session_state.shopify_store = shopify_store
             st.session_state.shopify_token = shopify_token
             st.session_state.sentos_api_url = sentos_api_url
@@ -105,10 +106,8 @@ with st.form("settings_form"):
             st.session_state.sentos_api_secret = sentos_api_secret
             st.session_state.sentos_cookie = sentos_cookie
             
-            # 3. Yeni bilgilerle bağlantıları otomatik olarak yeniden test et
             st.info("Re-testing connections with new settings...")
             
-            # İki ayrı spinner bloğu oluşturarak testlerin ayrı ayrı çalışmasını sağla
             with st.spinner("Testing Shopify connection..."):
                 if shopify_store and shopify_token:
                     test_shopify_connection(shopify_store, shopify_token)
@@ -124,5 +123,3 @@ with st.form("settings_form"):
                     st.session_state.sentos_status = 'pending'
         else:
             st.error("❌ Failed to save settings.")
-
-# Eski test butonları kaldırıldı. Artık tek bir yerden kontrol ediliyor.

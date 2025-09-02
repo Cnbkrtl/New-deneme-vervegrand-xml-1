@@ -1,0 +1,17 @@
+credentials:
+  usernames:
+    jsmith:
+      email: jsmith@gmail.com
+      name: John Smith
+      password: '$2b$12$BqtHtrZfPr..zwVg5sob7eqgKYlPrrT0kTXugBmFT01dA8GrXWo4q' # generate_keys.py'den gelen ilk hash
+    rhendricks:
+      email: rhendricks@gmail.com
+      name: Richard Hendricks
+      password: '$2b$12$gIqHjCLxMPnzzsgt9Tk80u9feBQHpUAt50hBSO5BByjCpgKRJgn5W' # generate_keys.py'den gelen ikinci hash
+cookie:
+  expiry_days: 30
+  key: 'cnbkrtl_ozel_akitma' # Bu anahtarı rastgele bir şeyle değiştirin
+  name: 'some_cookie_name'
+preauthorized:
+  emails:
+  - melsmith@gmail.com

@@ -1,7 +1,7 @@
 import streamlit as st
 
-# Giriş kontrolü
-if not st.session_state.get("logged_in"):
+# Giriş kontrolü (Tüm sayfa dosyalarının başına bunu ekleyin)
+if not st.session_state.get("authentication_status"):
     st.error("Please log in to access this page.")
     st.stop()
 

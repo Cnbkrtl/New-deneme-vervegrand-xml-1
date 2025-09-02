@@ -22,7 +22,7 @@ if 'live_log' not in st.session_state:
     st.session_state.live_log = []
 
 # --- Giriş Kontrolü ---
-if not st.session_state.get("logged_in"):
+if not st.session_state.get("authentication_status"):
     st.error("Please log in to access this page.")
     st.stop()
 
