@@ -21,57 +21,31 @@ st.set_page_config(
 # --- CSS Stil Dosyası (Değişiklik yok) ---
 st.markdown("""
 <style>
-/* ... CSS kodunuz ... */
+/* ... CSS kodunuz burada ... */
 </style>
 """, unsafe_allow_html=True)
 
-# --- UYGULAMA BAŞLATMA ---
+
 def initialize_session_state_defaults():
-    """Temel session state anahtarlarının var olduğundan emin olur."""
     defaults = {
         'app_initialized': True, 'shopify_status': 'pending', 'sentos_status': 'pending',
         'shopify_data': {}, 'sentos_data': {}, 'sync_running': False,
         'stop_sync_event': None, 'progress_queue': queue.Queue(),
-        'sync_results': None, 'live_log': []
+        'sync_results': None, 'live_log': [], 'user_data_loaded_for': None
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
-initialize_session_state_defaults()
+def load_and_verify_user_data(username):
+    """Kullanıcıya özel API anahtarlarını yükler ve bağlantıları test eder."""
+    # Bu fonksiyon, aynı oturumda tekrar tekrar çalışıp API'leri yormasın diye bir kontrol ekliyoruz.
+    if st.session_state.get('user_data_loaded_for') == username:
+        return
 
-# --- GİRİŞ VE KULLANICI YÖNETİMİ ---
-with open('config.yaml') as file:
-    config = yaml.load(file, Loader=SafeLoader)
+    st.session_state.shopify_status = 'pending'
+    st.session_state.sentos_status = 'pending'
 
-authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days']
-)
-
-# Login widget'ını render et
-authenticator.login()
-
-if st.session_state["authentication_status"]:
-    # --- Başarılı Giriş Sonrası ---
-    
-    # Kenar Çubuğu
-    with st.sidebar:
-        st.title(f"Welcome, *{st.session_state['name']}*!")
-        authenticator.logout(use_container_width=True)
-
-        if st.button("Forget All Settings", use_container_width=True, type="primary"):
-            if os.path.exists("credentials.enc"): os.remove("credentials.enc")
-            if os.path.exists(".secret.key"): os.remove(".secret.key")
-            st.success("Tüm ayarlar ve şifreleme anahtarı silindi.")
-            st.rerun()
-        st.markdown("---")
-        st.info("Vervegrand Sync Tool v21.0")
-
-    # Kullanıcıya özel API anahtarlarını yükle ve bağlantıyı test et
-    username = st.session_state["username"]
     all_creds = load_all_keys()
     user_creds = all_creds.get(username, {})
 
@@ -90,7 +64,6 @@ if st.session_state["authentication_status"]:
             st.session_state.shopify_data = shopify_api.test_connection()
             st.session_state.shopify_status = 'connected'
         except: st.session_state.shopify_status = 'failed'
-    else: st.session_state.shopify_status = 'pending'
 
     if st.session_state.sentos_api_url and st.session_state.sentos_api_key and st.session_state.sentos_api_secret:
         try:
@@ -98,9 +71,43 @@ if st.session_state["authentication_status"]:
             st.session_state.sentos_data = sentos_api.test_connection()
             st.session_state.sentos_status = 'connected' if st.session_state.sentos_data.get('success') else 'failed'
         except: st.session_state.sentos_status = 'failed'
-    else: st.session_state.sentos_status = 'pending'
-    
-    # Ana Karşılama Sayfası
+
+    # Bu kullanıcı için verilerin yüklendiğini işaretle
+    st.session_state['user_data_loaded_for'] = username
+
+
+initialize_session_state_defaults()
+
+# --- GİRİŞ VE KULLANICI YÖNETİMİ ---
+with open('config.yaml') as file:
+    config = yaml.load(file, Loader=SafeLoader)
+
+authenticator = stauth.Authenticate(
+    config['credentials'],
+    config['cookie']['name'],
+    config['cookie']['key'],
+    config['cookie']['expiry_days']
+)
+
+authenticator.login()
+
+if st.session_state["authentication_status"]:
+    # YENİ ve GÜVENİLİR YÖNTEM:
+    # Kullanıcı giriş yaptığı sürece, anahtarlarının yüklendiğinden emin ol.
+    load_and_verify_user_data(st.session_state["username"])
+
+    with st.sidebar:
+        st.title(f"Welcome, *{st.session_state['name']}*!")
+        authenticator.logout(use_container_width=True)
+
+        if st.button("Forget All Settings", use_container_width=True, type="primary"):
+            if os.path.exists("credentials.enc"): os.remove("credentials.enc")
+            if os.path.exists(".secret.key"): os.remove(".secret.key")
+            st.success("Tüm ayarlar ve şifreleme anahtarı silindi.")
+            st.rerun()
+        st.markdown("---")
+        st.info("Vervegrand Sync Tool v21.1")
+
     st.markdown("""
         <div class="main-header">
             <h1>Vervegrand Sync Tool</h1>
