@@ -1,7 +1,7 @@
-# render.yaml
+# render.yaml (NİHAİ VE DOĞRU VERSİYON)
 
 services:
-  # Servis 1: Redis Veritabanı (Değişiklik yok)
+  # Servis 1: Redis Veritabanı
   - type: redis
     name: redis-db
     plan: free
@@ -12,8 +12,13 @@ services:
     name: app-and-worker
     env: python
     plan: free
-    # Başlangıç komutunu Python modülü olarak çalışacak şekilde güncelledik.
-    startCommand: python -m honcho start
+    # EKSİK OLAN SATIRI BURAYA EKLİYORUZ:
+    # Bu komut, Render'a requirements.txt dosyasındaki tüm paketleri kurmasını söyler.
+    buildCommand: "pip install -r requirements.txt"
+    
+    # Başlangıç komutumuz zaten doğruydu:
+    startCommand: "python -m honcho start"
+    
     healthCheckPath: /_stcore/health
     envVars:
       - key: REDIS_URL
@@ -21,5 +26,5 @@ services:
           type: redis
           name: redis-db
           property: connectionString
-      # ÖNEMLİ: Diğer API anahtarlarınızı (SHOPIFY_STORE, SHOPIFY_TOKEN, SENTOS_API_URL vb.)
-      # Render arayüzündeki "Environment" sekmesinden eklemeyi unutmayın.
+      # Diğer API anahtarlarınızı Render arayüzündeki "Environment" sekmesinden
+      # eklemeyi unutmayın.
