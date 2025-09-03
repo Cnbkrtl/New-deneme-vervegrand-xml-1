@@ -5,3 +5,5 @@ cryptography
 streamlit-authenticator
 PyYAML
 bcrypt
+redis
+rq
