@@ -1,4 +1,4 @@
-# render.yaml (2'si 1 arada versiyon)
+# render.yaml
 
 services:
   # Servis 1: Redis Veritabanı (Değişiklik yok)
@@ -7,14 +7,13 @@ services:
     plan: free
     ipAllowList: []
 
-  # Servis 2: Web Servisi (Artık Worker'ı da çalıştıracak)
+  # Servis 2: Web Servisi ve Worker
   - type: web
-    name: app-and-worker # İsim daha açıklayıcı oldu
+    name: app-and-worker
     env: python
     plan: free
-    # Başlangıç komutu artık honcho'yu çağırıyor.
-    # honcho, Procfile içindeki 'web' ve 'worker' satırlarını aynı anda başlatacak.
-    startCommand: honcho start
+    # Başlangıç komutunu Python modülü olarak çalışacak şekilde güncelledik.
+    startCommand: python -m honcho start
     healthCheckPath: /_stcore/health
     envVars:
       - key: REDIS_URL
@@ -22,4 +21,5 @@ services:
           type: redis
           name: redis-db
           property: connectionString
-      # Diğer ortam değişkenlerin Render arayüzünden eklenecek.
+      # ÖNEMLİ: Diğer API anahtarlarınızı (SHOPIFY_STORE, SHOPIFY_TOKEN, SENTOS_API_URL vb.)
+      # Render arayüzündeki "Environment" sekmesinden eklemeyi unutmayın.
