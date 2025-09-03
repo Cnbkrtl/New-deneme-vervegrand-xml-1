@@ -1,24 +1,17 @@
-# shopify_sync.py
+# shopify_sync.py (Worker için Nihai Versiyon)
 
-"""
-Sentos API'den Shopify'a Ürün Senkronizasyonu Mantık Dosyası
-Versiyon 20.4: Detaylı Canlı Loglama
-- GÜNCELLEME: Alt fonksiyonlar (_sync_variants_and_stock, _sync_product_media vb.)
-  artık yaptıkları işlemlerle ilgili metin raporları döndürüyor.
-- GÜNCELLEME: sync_single_product, bu raporları toplayarak arayüze (3_sync.py)
-  daha detaylı ve HTML formatında log bilgisi gönderiyor.
-"""
 import requests
 import time
 import json
-import threading
 import logging
 import traceback
 import re
+import threading  # ProductSyncManager içindeki RLock için gerekli
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.auth import HTTPBasicAuth
 from urllib.parse import urljoin, urlparse
 from datetime import timedelta
+from rq import get_current_job
 
 # --- Loglama Konfigürasyonu ---
 logging.basicConfig(
@@ -27,8 +20,8 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# --- Shopify API Entegrasyon Sınıfı ---
 class ShopifyAPI:
+    # ... Bu sınıfın içeriği olduğu gibi kalacak, değişiklik yok ...
     def __init__(self, store_url, access_token):
         if not store_url: raise ValueError("Shopify Mağaza URL'si boş olamaz.")
         if not access_token: raise ValueError("Shopify Erişim Token'ı boş olamaz.")
@@ -40,7 +33,7 @@ class ShopifyAPI:
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/20.4-Detailed-Logging'
+            'User-Agent': 'Sentos-Sync-Python/21.0-Worker'
         }
         self.product_cache = {}
         self.location_id = None
@@ -207,8 +200,8 @@ class ShopifyAPI:
             'plan': shop_data.get('plan', {}).get('displayName', 'N/A')
         }
 
-# --- Sentos API Sınıfı ---
 class SentosAPI:
+    # ... (sınıfın içeriği olduğu gibi kalacak)
     def __init__(self, api_url, api_key, api_secret, api_cookie=None):
         self.api_url = api_url.strip().rstrip('/')
         self.auth = HTTPBasicAuth(api_key, api_secret)
@@ -318,14 +311,14 @@ class SentosAPI:
         except Exception as e:
             return {'success': False, 'message': f'REST API failed: {e}'}
 
-# --- Senkronizasyon Yöneticisi ---
 class ProductSyncManager:
+    # ... (sınıfın içeriği olduğu gibi kalacak)
     def __init__(self, shopify_api, sentos_api):
         self.shopify = shopify_api
         self.sentos = sentos_api
         self.stats = {'total': 0, 'created': 0, 'updated': 0, 'failed': 0, 'skipped': 0, 'processed': 0}
         self.details = []
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def find_shopify_product(self, sentos_product):
         if sku := sentos_product.get('sku', '').strip():
@@ -726,6 +719,7 @@ class ProductSyncManager:
             logging.error(f"Toplu stok güncelleme sırasında kritik bir hata oluştu: {e}")
 
     def sync_single_product(self, sentos_product, sync_mode, progress_callback):
+        # ... (Bu fonksiyonun içeriğinde değişiklik yok)
         name = sentos_product.get('name', 'Bilinmeyen Ürün')
         sku = sentos_product.get('sku', 'SKU Yok')
         log_entry = {'name': name, 'sku': sku}
@@ -789,40 +783,53 @@ class ProductSyncManager:
                 self.stats['processed'] += 1
 
 # --- Ana Senkronizasyon Fonksiyonu ---
-def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, progress_callback, stop_event, max_workers=3, sync_mode="Full Sync (Create & Update All)"):
+def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, max_workers, sync_mode):
     start_time = time.monotonic()
+    
+    job = get_current_job()
+    if job:
+        job.meta['live_log'] = []
+        job.save_meta()
+
+    def progress_callback(update):
+        if job:
+            job.refresh()
+            current_meta = job.meta.copy()
+            if 'log_detail' in update:
+                current_meta['live_log'] = current_meta.get('live_log', []) + [update['log_detail']]
+            current_meta.update({k: v for k, v in update.items() if k != 'log_detail'})
+            job.meta = current_meta
+            job.save_meta()
+
     try:
         shopify_api = ShopifyAPI(store_url, access_token)
         sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
 
-        progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 5})
-        shopify_load_thread = threading.Thread(target=shopify_api.load_all_products, args=(progress_callback,))
-        shopify_load_thread.start()
+        progress_callback({'message': "Shopify ürünleri önbelleğe alınıyor...", 'progress': 5})
+        shopify_api.load_all_products(progress_callback=progress_callback)
         
         progress_callback({'message': "Sentos'tan ürünler çekiliyor...", 'progress': 15})
         sentos_products = sentos_api.get_all_products(progress_callback=progress_callback)
         
         if not sentos_products:
-            progress_callback({'status': 'done', 'results': {'stats': {'message': 'Sentos\'ta senkronize edilecek ürün bulunamadı.'}, 'details': []}})
-            return
+            return {'stats': {'message': 'Sentos\'ta senkronize edilecek ürün bulunamadı.'}, 'details': []}
 
         if test_mode: sentos_products = sentos_products[:20]
         
-        logging.info("Ana işlem, Shopify önbelleğinin tamamlanmasını bekliyor...")
-        shopify_load_thread.join()
-        logging.info("Shopify önbelleği hazır. Ana işlem devam ediyor.")
         progress_callback({'message': f"{len(sentos_products)} ürün senkronize ediliyor...", 'progress': 55})
         
         sync_manager = ProductSyncManager(shopify_api, sentos_api)
         sync_manager.stats['total'] = len(sentos_products)
 
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="SyncWorker") as executor:
-            futures = [executor.submit(sync_manager.sync_single_product, p, sync_mode, progress_callback) for p in sentos_products]
+            futures = {executor.submit(sync_manager.sync_single_product, p, sync_mode, progress_callback) for p in sentos_products}
+            
             for future in as_completed(futures):
-                if stop_event.is_set(): 
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    logging.warning("Senkronizasyon durduruldu.")
+                if job and job.meta.get('stop_requested'):
+                    logging.warning("Durdurma sinyali alındı.")
+                    for f in futures: f.cancel()
                     break
+
                 processed = sync_manager.stats['processed']
                 total = len(sentos_products)
                 progress = 55 + int((processed / total) * 45) if total > 0 else 100
@@ -834,7 +841,9 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
             'details': sync_manager.details,
             'duration': str(timedelta(seconds=duration))
         }
-        progress_callback({'status': 'done', 'results': results})
+        progress_callback({'progress': 100, 'message': 'Tamamlandı!', 'stats': results['stats']})
+        return results
     except Exception as e:
-        logging.critical(f"Senkronizasyon görevi başlatılamadı veya kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
+        logging.critical(f"Senkronizasyon görevi kritik hata: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
+        raise
