@@ -9,7 +9,8 @@ services:
   # Servis 1: Redis Veritabanı
   - type: redis
     name: redis-db
-    plan: free # Bedava katmanı kullan
+    plan: free
+    ipAllowList: [] # Sadece bu satırı ekliyoruz
 
   # Servis 2: Arka Plan İşçisi (Worker)
   - type: worker
