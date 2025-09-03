@@ -1,8 +1,7 @@
-# pages/2_⚙️_Settings.py
-
 import streamlit as st
-from config_manager import save_user_keys # Değişiklik burada
+from config_manager import save_user_keys # save_all_keys yerine save_user_keys
 from shopify_sync import ShopifyAPI, SentosAPI
+import os # Ortam değişkenlerini okumak için eklendi
 
 # Giriş kontrolü
 if not st.session_state.get("authentication_status"):
@@ -13,7 +12,7 @@ if not st.session_state.get("authentication_status"):
 st.markdown("""
 <div class="main-header">
     <h1>⚙️ Settings</h1>
-    <p>Configure API connections. Settings are encrypted and saved automatically for your user account.</p>
+    <p>Configure API connections. Settings are saved automatically for your user.</p>
 </div>
 """, unsafe_allow_html=True)
 
@@ -48,14 +47,15 @@ with st.form("settings_form"):
     
     with col1:
         st.subheader("🏪 Shopify Settings")
+        # GÜNCELLEME: Değerler önce ortam değişkeninden (os.getenv) okunur.
         shopify_store = st.text_input(
             "Store URL", 
-            value=st.session_state.get('shopify_store', ''),
+            value=os.getenv("SHOPIFY_STORE", st.session_state.get('shopify_store', '')),
             placeholder="your-store.myshopify.com"
         )
         shopify_token = st.text_input(
             "Access Token", 
-            value=st.session_state.get('shopify_token', ''),
+            value=os.getenv("SHOPIFY_TOKEN", st.session_state.get('shopify_token', '')),
             type="password"
         )
     
@@ -63,32 +63,31 @@ with st.form("settings_form"):
         st.subheader("Sentos API Settings")
         sentos_api_url = st.text_input(
             "Sentos API URL", 
-            value=st.session_state.get('sentos_api_url', ''),
+            value=os.getenv("SENTOS_API_URL", st.session_state.get('sentos_api_url', '')),
             placeholder="https://stildiva.sentos.com.tr/api"
         )
         sentos_api_key = st.text_input(
             "Sentos API Key", 
-            value=st.session_state.get('sentos_api_key', '')
+            value=os.getenv("SENTOS_API_KEY", st.session_state.get('sentos_api_key', ''))
         )
         sentos_api_secret = st.text_input(
             "Sentos API Secret", 
-            value=st.session_state.get('sentos_api_secret', ''),
+            value=os.getenv("SENTOS_API_SECRET", st.session_state.get('sentos_api_secret', '')),
             type="password"
         )
         sentos_cookie = st.text_input(
             "Sentos API Cookie",
-            value=st.session_state.get('sentos_cookie', ''),
-            type="password",
-            help="Resim sırasını doğru çekmek için Sentos panelinden alınan Cookie değeri."
+            value=os.getenv("SENTOS_COOKIE", st.session_state.get('sentos_cookie', '')),
+            type="password"
         )
 
     st.markdown("---")
     submitted = st.form_submit_button("💾 Save & Test Connections", use_container_width=True, type="primary")
 
     if submitted:
-        username = st.session_state["username"]
+        current_username = st.session_state.get("username")
         if save_user_keys(
-            username,  # Değişiklik burada: Hangi kullanıcı için kaydedileceğini belirtiyoruz
+            username=current_username,
             shopify_store=shopify_store,
             shopify_token=shopify_token,
             sentos_api_url=sentos_api_url,
@@ -96,30 +95,19 @@ with st.form("settings_form"):
             sentos_api_secret=sentos_api_secret,
             sentos_cookie=sentos_cookie
         ):
-            st.success(f"✅ Settings for user '{username}' saved and encrypted!")
+            st.success("✅ Settings saved for user!")
             
             # Session state'i yeni değerlerle güncelle
-            st.session_state.shopify_store = shopify_store
-            st.session_state.shopify_token = shopify_token
-            st.session_state.sentos_api_url = sentos_api_url
-            st.session_state.sentos_api_key = sentos_api_key
-            st.session_state.sentos_api_secret = sentos_api_secret
-            st.session_state.sentos_cookie = sentos_cookie
+            st.session_state.update({
+                'shopify_store': shopify_store, 'shopify_token': shopify_token,
+                'sentos_api_url': sentos_api_url, 'sentos_api_key': sentos_api_key,
+                'sentos_api_secret': sentos_api_secret, 'sentos_cookie': sentos_cookie
+            })
             
-            st.info("Re-testing connections with new settings...")
-            
-            with st.spinner("Testing Shopify connection..."):
-                if shopify_store and shopify_token:
-                    test_shopify_connection(shopify_store, shopify_token)
-                else:
-                    st.warning("Shopify settings are missing.")
-                    st.session_state.shopify_status = 'pending'
-
-            with st.spinner("Testing Sentos connection..."):
-                if sentos_api_url and sentos_api_key and sentos_api_secret:
-                    test_sentos_connection(sentos_api_url, sentos_api_key, sentos_api_secret)
-                else:
-                    st.warning("Sentos settings are missing.")
-                    st.session_state.sentos_status = 'pending'
+            st.info("Re-testing connections...")
+            if shopify_store and shopify_token:
+                test_shopify_connection(shopify_store, shopify_token)
+            if sentos_api_url and sentos_api_key and sentos_api_secret:
+                test_sentos_connection(sentos_api_url, sentos_api_key, sentos_api_secret)
         else:
             st.error("❌ Failed to save settings.")
