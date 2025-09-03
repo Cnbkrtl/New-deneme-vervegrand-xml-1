@@ -7,3 +7,4 @@ PyYAML
 bcrypt
 redis
 rq
+honcho
