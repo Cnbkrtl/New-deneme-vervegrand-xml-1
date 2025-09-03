@@ -1,0 +1,41 @@
+# render.yaml
+
+# Bu dosya, Render'a projemizin hangi servislerden oluştuğunu anlatır.
+# 1. Bir Redis veritabanı
+# 2. Bir arkaplan işçisi (worker)
+# 3. Bir web arayüzü (streamlit)
+
+services:
+  # Servis 1: Redis Veritabanı
+  - type: redis
+    name: redis-db
+    plan: free # Bedava katmanı kullan
+
+  # Servis 2: Arka Plan İşçisi (Worker)
+  - type: worker
+    name: worker
+    env: python
+    plan: free # Bedava katmanı kullan
+    startCommand: python worker.py
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis-db
+          property: connectionString
+      # Buraya daha sonra diğer ortam değişkenlerini (API anahtarları vb.) ekleyeceğiz.
+
+  # Servis 3: Streamlit Web Arayüzü
+  - type: web
+    name: streamlit-app
+    env: python
+    plan: free # Bedava katmanı kullan
+    startCommand: streamlit run streamlit_app.py
+    healthCheckPath: /_stcore/health # Streamlit'in sağlıklı çalışıp çalışmadığını kontrol eder
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis-db
+          property: connectionString
+      # Buraya daha sonra diğer ortam değişkenlerini (API anahtarları vb.) ekleyeceğiz.
