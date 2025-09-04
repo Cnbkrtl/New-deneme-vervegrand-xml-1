@@ -116,6 +116,50 @@ if st.session_state["authentication_status"]:
         """, unsafe_allow_html=True)
     st.info("👈 Please select a page from the sidebar to begin.")
 
+    import streamlit as st
+
+    # Session state initialization
+    if 'sync_status' not in st.session_state:
+        st.session_state.sync_status = None
+    if 'sync_job_id' not in st.session_state:
+        st.session_state.sync_job_id = None
+    if 'sync_progress' not in st.session_state:
+        st.session_state.sync_progress = 0
+
+    # Sync başlatırken
+    def start_sync():
+        # ...existing sync code...
+        st.session_state.sync_status = "running"
+        st.session_state.sync_job_id = job_id  # Redis queue job ID
+        st.session_state.sync_progress = 0
+
+    # Progress tracking function
+    def check_sync_progress():
+        if st.session_state.sync_job_id:
+            # Redis job durumunu kontrol et
+            job = q.fetch_job(st.session_state.sync_job_id)
+            if job:
+                if job.is_finished:
+                    st.session_state.sync_status = "completed"
+                elif job.is_failed:
+                    st.session_state.sync_status = "failed"
+                else:
+                    st.session_state.sync_status = "running"
+                    # Progress güncelle
+                    st.session_state.sync_progress = job.meta.get('progress', 0)
+
+    # Her sayfada sync durumunu kontrol et
+    if st.session_state.sync_status == "running":
+        check_sync_progress()
+
+    # Sync durumunu sidebar'da göster
+    if st.session_state.sync_status == "running":
+        st.sidebar.warning(f"🔄 Sync devam ediyor... ({st.session_state.sync_progress}%)")
+    elif st.session_state.sync_status == "completed":
+        st.sidebar.success("✅ Sync tamamlandı!")
+    elif st.session_state.sync_status == "failed":
+        st.sidebar.error("❌ Sync başarısız!")
+
 elif st.session_state["authentication_status"] is False:
     st.error('Username/password is incorrect')
 elif st.session_state["authentication_status"] is None:
