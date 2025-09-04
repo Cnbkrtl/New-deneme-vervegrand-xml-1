@@ -33,5 +33,6 @@ services:
   - type: web
     name: streamlit-app
     env: python
-    buildCommand: "ls -la && poetry install"
+    buildCommand: "ls -la && pip install -r requirements.txt"
     startCommand: "streamlit run streamlit_app.py --server.port $PORT --server.enableCORS=false"
+    healthCheckPath: /_stcore/health
