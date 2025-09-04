@@ -56,7 +56,7 @@ is_any_sync_running = st.session_state.sync_running or st.session_state.sync_mis
 if not sync_ready:
     st.warning("⚠️ Lütfen senkronizasyonu başlatmadan önce Ayarlar sayfasında her iki API bağlantısını da yapılandırın.")
 else:
-    # --- BÖLÜM 1: ANA SENKRONİZASYON KONTROL PANELİ (DEĞİŞİKLİK YOK) ---
+    # --- BÖLÜM 1: ANA SENKRONİZASYON KONTROL PANELİ ---
     st.subheader("Yeni Bir Senkronizasyon Görevi Başlat")
     
     sync_mode = st.selectbox(
@@ -112,7 +112,7 @@ else:
     
     st.markdown("---")
 
-    # --- Ana senkronizasyon için ilerleme takibi (DEĞİŞİKLİK YOK) ---
+    # --- Ana senkronizasyon için ilerleme takibi ---
     if st.session_state.sync_running:
         st.subheader("📊 Ana Senkronizasyon Devam Ediyor...")
         progress_bar = st.progress(0, text="Başlatılıyor...")
@@ -165,10 +165,11 @@ else:
         stats = results.get('stats', {})
         
         if results and stats:
-            duration_str = results.get('duration', 'N/A')
+            duration_str = results.get('duration', str(timedelta(seconds=(time.monotonic() - st.session_state.get('start_time', time.monotonic())))))
+            results['duration'] = duration_str
             results['sync_mode'] = st.session_state.get('selected_sync_mode', 'Bilinmiyor')
             save_log(results)
-            st.success(f"Senkronizasyon görevi {duration_str} içinde tamamlandı. Özet aşağıdadır.")
+            st.success(f"Senkronizasyon görevi {duration_str.split('.')[0]} içinde tamamlandı. Özet aşağıdadır.")
         
         st.metric("İşlenen Toplam Ürün", f"{stats.get('processed', 0)} / {stats.get('total', 0)}")
         kpi_cols = st.columns(4)
@@ -263,11 +264,13 @@ else:
         st.subheader("✅ Eksik Ürün Oluşturma Görevi Tamamlandı")
         results = st.session_state.sync_missing_results
         stats = results.get('stats', {})
-        duration_str = results.get('duration', 'N/A')
         
-        results['sync_mode'] = 'Create Missing Only'
-        save_log(results)
-        st.success(f"Görev {duration_str} içinde tamamlandı. Özet aşağıdadır.")
+        if results and stats:
+            duration_str = results.get('duration', str(timedelta(seconds=(time.monotonic() - st.session_state.get('start_time_missing', time.monotonic())))))
+            results['duration'] = duration_str
+            results['sync_mode'] = 'Create Missing Only'
+            save_log(results)
+            st.success(f"Görev {duration_str.split('.')[0]} içinde tamamlandı. Özet aşağıdadır.")
         
         st.metric("İşlenen Toplam Ürün", f"{stats.get('processed', 0)} / {stats.get('total', 0)}")
         kpi_cols = st.columns(2)
