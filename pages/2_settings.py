@@ -1,6 +1,5 @@
 import streamlit as st
-# GÜNCELLEME: Modülün tamamı import ediliyor
-import config_manager 
+import config_manager
 from shopify_sync import ShopifyAPI, SentosAPI
 
 # Giriş kontrolü
@@ -16,7 +15,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Test fonksiyonları (değişiklik yok)
+# Test fonksiyonları
 def test_shopify_connection(store, token):
     try:
         api = ShopifyAPI(store, token)
@@ -49,12 +48,12 @@ with st.form("settings_form"):
     with col1:
         st.subheader("🏪 Shopify Ayarları")
         shopify_store = st.text_input(
-            "Mağaza URL", 
+            "Mağaza URL",
             value=st.session_state.get('shopify_store', ''),
             placeholder="your-store.myshopify.com"
         )
         shopify_token = st.text_input(
-            "Erişim Token'ı", 
+            "Erişim Token'ı",
             value=st.session_state.get('shopify_token', ''),
             type="password"
         )
@@ -62,16 +61,16 @@ with st.form("settings_form"):
     with col2:
         st.subheader("Sentos API Ayarları")
         sentos_api_url = st.text_input(
-            "Sentos API URL", 
+            "Sentos API URL",
             value=st.session_state.get('sentos_api_url', ''),
             placeholder="https://stildiva.sentos.com.tr/api"
         )
         sentos_api_key = st.text_input(
-            "Sentos API Key", 
+            "Sentos API Key",
             value=st.session_state.get('sentos_api_key', '')
         )
         sentos_api_secret = st.text_input(
-            "Sentos API Secret", 
+            "Sentos API Secret",
             value=st.session_state.get('sentos_api_secret', ''),
             type="password"
         )
@@ -86,9 +85,12 @@ with st.form("settings_form"):
     submitted = st.form_submit_button("💾 Kaydet ve Bağlantıları Test Et", use_container_width=True, type="primary")
 
     if submitted:
-        # 1. Ayarları Kaydet
-        # GÜNCELLEME: Fonksiyon, import edilen modül üzerinden çağrılıyor
-        if config_manager.save_all_keys(
+        # **FIX:** Calling the correct function `save_user_keys` with the `username` parameter.
+        current_username = st.session_state.get("username")
+        if not current_username:
+            st.error("Kullanıcı adı bulunamadı. Lütfen tekrar giriş yapın.")
+        elif config_manager.save_user_keys(
+            current_username, # Added the required username parameter
             shopify_store=shopify_store,
             shopify_token=shopify_token,
             sentos_api_url=sentos_api_url,
@@ -96,9 +98,9 @@ with st.form("settings_form"):
             sentos_api_secret=sentos_api_secret,
             sentos_cookie=sentos_cookie
         ):
-            st.success("✅ Tüm ayarlar kaydedildi ve şifrelendi!")
+            st.success("✅ Ayarlarınız kaydedildi ve şifrelendi!")
             
-            # 2. Session state'i yeni değerlerle güncelle
+            # Update session state with new values
             st.session_state.shopify_store = shopify_store
             st.session_state.shopify_token = shopify_token
             st.session_state.sentos_api_url = sentos_api_url
@@ -106,7 +108,7 @@ with st.form("settings_form"):
             st.session_state.sentos_api_secret = sentos_api_secret
             st.session_state.sentos_cookie = sentos_cookie
             
-            # 3. Yeni bilgilerle bağlantıları otomatik olarak yeniden test et
+            # Automatically re-test connections
             st.info("Yeni ayarlarla bağlantılar yeniden test ediliyor...")
             
             with st.spinner("Shopify bağlantısı test ediliyor..."):
