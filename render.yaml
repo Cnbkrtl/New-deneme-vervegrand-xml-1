@@ -28,3 +28,10 @@ services:
           property: connectionString
       # Diğer API anahtarlarınızı Render arayüzündeki "Environment" sekmesinden
       # eklemeyi unutmayın.
+
+  # Servis 3: Streamlit Uygulaması
+  - type: web
+    name: streamlit-app
+    env: python
+    buildCommand: "poetry install"
+    startCommand: "streamlit run streamlit_app.py"
