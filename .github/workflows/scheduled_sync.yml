@@ -1,0 +1,41 @@
+# .github/workflows/scheduled_sync.yml
+
+name: Scheduled Product Sync
+
+on:
+  # Her 2 saatte bir otomatik olarak çalıştır
+  schedule:
+    - cron: '0 */2 * * *'
+  
+  # Manuel olarak da çalıştırabilmek için butonu etkinleştir
+  workflow_dispatch:
+
+jobs:
+  sync-products:
+    runs-on: ubuntu-latest
+    steps:
+      # 1. Adım: Proje kodlarını sanal makineye indir
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Adım: Python 3.11'i kur
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # 3. Adım: Gerekli Python kütüphanelerini kur
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # 4. Adım: Senkronizasyon script'ini çalıştır
+      - name: Run product sync
+        env:
+          # Bu kısım, GitHub Secrets'tan ayarları okur
+          SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
+          SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
+          SENTOS_API_URL: ${{ secrets.SENTOS_API_URL }}
+          SENTOS_API_KEY: ${{ secrets.SENTOS_API_KEY }}
+          SENTOS_API_SECRET: ${{ secrets.SENTOS_API_SECRET }}
+          SENTOS_COOKIE: ${{ secrets.SENTOS_COOKIE }}
+        run: python run_scheduled_sync.py
