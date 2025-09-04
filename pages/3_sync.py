@@ -207,7 +207,7 @@ else:
             }
             start_sync_thread(sync_missing_products_only, 'sync_missing_running', 'missing_sync_thread', kwargs)
 
-    # --- BÖLÜM 3: TEKİL ÜRÜN GÜNCELLEME (SKU İLE) ---
+    # --- BÖLÜM 3: TEKİL ÜRÜN GÜNCELLEME (SKU İLE) --- (EKLENEN BÖLÜM)
     st.markdown("---")
     with st.expander("✨ **Feature: Sync Single Product by SKU**"):
         st.info("Enter the model code (SKU) of a product from Sentos to instantly find and fully update its counterpart in Shopify.")
