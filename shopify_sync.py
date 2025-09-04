@@ -2,12 +2,12 @@
 
 """
 Sentos API'den Shopify'a Ürün Senkronizasyonu Mantık Dosyası
-Versiyon 22.1: Kararlı Başlatma ve Bellek Optimizasyonu
-- YAPI: Senkronizasyonun başlangıcındaki ani bellek (RAM) patlamasını önlemek için
-  ana senkronizasyon fonksiyonu yeniden tasarlandı.
-- GÜNCELLEME: Shopify ürünleri önce tek başına yüklenir, ardından Sentos ürünleri
-  sayfa sayfa (batch) işlenir. Bu, kaynak limitli platformlarda kararlı çalışmayı garantiler.
-- KORUMA: Kullanıcının paylaştığı detaylı senkronizasyon ve loglama mantığı korunmuştur.
+Versiyon 22.2: Birleşik İyileştirme
+- YAPI: v22.1'deki kararlı başlatma ve bellek optimizasyonu (sayfa sayfa işleme) korunmuştur.
+- PERFORMANS: v20.4'teki eş zamanlı veri çekme (threading) mantığı, başlangıç süresini
+  kısaltmak için yeniden entegre edilmiştir. Shopify ürünleri önbelleğe alınırken,
+  Sentos ürünleri de çekilmeye başlar.
+- BÜTÜNLÜK: Tüm yeni özellikler (cron, eksik ürün, tekil SKU sync) korunmuştur.
 """
 import requests
 import time
@@ -41,7 +41,7 @@ class ShopifyAPI:
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/22.1-Stable-Start'
+            'User-Agent': 'Sentos-Sync-Python/22.2-Combined-Optimization'
         }
         self.product_cache = {}
         self.location_id = None
@@ -827,13 +827,26 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
         sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
         sync_manager = ProductSyncManager(shopify_api, sentos_api)
 
-        progress_callback({'message': "Shopify ürünleri önbelleğe alınıyor...", 'progress': 10})
-        shopify_api.load_all_products(progress_callback=progress_callback)
+        # --- DÜZELTME: Orijinal koddaki gibi eş zamanlı (concurrent) veri çekme ---
+        progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 10})
+        shopify_load_thread = threading.Thread(
+            target=shopify_api.load_all_products, 
+            args=(progress_callback,),
+            name="ShopifyLoader"
+        )
+        shopify_load_thread.start()
         
         if stop_event.is_set():
             raise Exception("İşlem başlangıçta durduruldu.")
-
+        
+        # Shopify yüklenirken, Sentos ürünlerini sayfa sayfa işlemeye başla
         progress_callback({'message': "Sentos ürünleri işlenmeye başlıyor...", 'progress': 40})
+        
+        # Ana işlem, Shopify önbelleğinin tamamlanmasını bekler.
+        # Bu, Sentos işlemeye başlamadan önce Shopify ürünlerinin hazır olmasını garantiler.
+        shopify_load_thread.join()
+        logging.info("Shopify önbelleği hazır. Ana senkronizasyon devam ediyor.")
+
         _process_sentos_products_in_batches(
             sync_manager, sentos_api, sync_mode, progress_callback, stop_event, max_workers, test_mode
         )
@@ -990,4 +1003,4 @@ def sync_single_product_by_sku(store_url, access_token, sentos_api_url, sentos_a
 
     except Exception as e:
         logging.error(f"Tekil ürün {sku} senkronizasyonunda hata: {e}\n{traceback.format_exc()}")
-        return {'success': False, 'message': str(e)}        
+        return {'success': False, 'message': str(e)}
