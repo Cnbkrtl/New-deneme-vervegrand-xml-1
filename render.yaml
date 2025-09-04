@@ -12,13 +12,8 @@ services:
     name: app-and-worker
     env: python
     plan: free
-    # EKSİK OLAN SATIRI BURAYA EKLİYORUZ:
-    # Bu komut, Render'a requirements.txt dosyasındaki tüm paketleri kurmasını söyler.
     buildCommand: "pip install -r requirements.txt"
-    
-    # Başlangıç komutumuz zaten doğruydu:
     startCommand: "python -m honcho start"
-    
     healthCheckPath: /_stcore/health
     envVars:
       - key: REDIS_URL
@@ -40,13 +35,13 @@ services:
       - key: RENDER_EXTERNAL_URL
         value: "https://streamlit-app.onrender.com"
 
-  # Servis 4: Cron Job - Otomatik Sync
+  # Servis 4: Cron Job - Otomatik Sync (Orijinal çalışan versiyon)
   - type: cron
     name: auto-sync-scheduler
     env: python
     buildCommand: "pip install -r requirements.txt"
-    schedule: "0 */2 * * *"  # Her 2 saatte bir (120 dakika)
-    startCommand: "timeout 15m python cron_scheduler.py"  # 15 dakika timeout (25'ten düşürüldü)
+    schedule: "0 */2 * * *"  # Her 2 saatte bir (orijinal ayar)
+    startCommand: "timeout 25m python cron_scheduler.py"  # Orijinal timeout
     envVars:
       - key: REDIS_URL
         fromService:
@@ -56,19 +51,19 @@ services:
       - key: APP_URL
         value: "https://app-and-worker.onrender.com"
       - key: SYNC_BATCH_SIZE
-        value: "5"  # 10'dan 5'e düşürüldü
+        value: "10"  # Orijinal değer
       - key: SYNC_MAX_WORKERS
-        value: "2"  # 3'ten 2'ye düşürüldü
+        value: "3"   # Orijinal değer
 
-  # Servis 5: Keep-Alive Service - Ana Uygulama
+  # Servis 5: Keep-Alive Service - Ana Uygulama (Orijinal)
   - type: cron
     name: keep-alive-main
     env: python
     buildCommand: "pip install requests"
-    schedule: "*/5 * * * *"  # Her 5 dakikada bir
+    schedule: "*/5 * * * *"  # Her 5 dakikada bir (orijinal)
     startCommand: "python -c 'import requests; import time; requests.get(\"https://app-and-worker.onrender.com/_stcore/health\", timeout=30); time.sleep(2); requests.get(\"https://streamlit-app.onrender.com/_stcore/health\", timeout=30); print(\"Keep-alive ping sent\")'"
 
-  # Servis 6: Keep-Alive Service - Yedek
+  # Servis 6: Keep-Alive Service - Yedek (Orijinal)
   - type: cron
     name: keep-alive-backup
     env: python
