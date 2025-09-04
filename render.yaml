@@ -33,5 +33,5 @@ services:
   - type: web
     name: streamlit-app
     env: python
-    buildCommand: "poetry install"
-    startCommand: "streamlit run streamlit_app.py --server.port $PORT --server.enableCORS=false"
+    buildCommand: "cd New-deneme-vervegrand-xml-1 && poetry install"
+    startCommand: "cd New-deneme-vervegrand-xml-1 && streamlit run streamlit_app.py --server.port $PORT --server.enableCORS=false"
