@@ -685,27 +685,35 @@ def sync_products_from_sentos_api(
     sync_mode="Full Sync",
     progress_callback=None
 ):
+    """Ana sync fonksiyonu"""
+    
+    # Progress callback güvenli çağrı fonksiyonu
+    def safe_progress_callback(data):
+        if progress_callback and callable(progress_callback):
+            try:
+                progress_callback(data)
+            except Exception as e:
+                logging.warning(f"Progress callback hatası: {e}")
+    
     try:
         shopify_api = ShopifyAPI(shopify_store, shopify_token)
         sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_user_id, sentos_cookie)
 
-        progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 5})
-        shopify_load_thread = threading.Thread(target=shopify_api.load_all_products, args=(progress_callback,))
-        shopify_load_thread.start()
+        safe_progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 5})
+        shopify_api.load_all_products(progress_callback=safe_progress_callback)
         
-        progress_callback({'message': "Sentos'tan ürünler çekiliyor...", 'progress': 15})
-        sentos_products = sentos_api.get_all_products(progress_callback=progress_callback)
+        safe_progress_callback({'message': "Sentos'tan ürünler çekiliyor...", 'progress': 15})
+        sentos_products = sentos_api.get_all_products(progress_callback=safe_progress_callback)
         
         if not sentos_products:
             return {'stats': {'message': 'Sentos\'ta senkronize edilecek ürün bulunamadı.'}, 'details': []}
 
-        # Sadece bu satırı kaldır (test_mode undefined variable hatası)
-        # if test_mode: sentos_products = sentos_products[:20]
+        # Problematik satırları kaldır
+        # logging.info("Ana işlem, Shopify önbelleğinin tamamlanmasını bekliyor...")
+        # shopify_load_thread.join()
+        # logging.info("Shopify önbelleği hazır. Ana işlem devam ediyor.")
         
-        logging.info("Ana işlem, Shopify önbelleğinin tamamlanmasını bekliyor...")
-        shopify_load_thread.join()
-        logging.info("Shopify önbelleği hazır. Ana işlem devam ediyor.")
-        progress_callback({'message': f"{len(sentos_products)} ürün senkronize ediliyor...", 'progress': 55})
+        safe_progress_callback({'message': f"{len(sentos_products)} ürün senkronize ediliyor...", 'progress': 55})
         
         sync_manager = ProductSyncManager(shopify_api, sentos_api)
         sync_manager.stats['total'] = len(sentos_products)
@@ -713,12 +721,17 @@ def sync_products_from_sentos_api(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(sync_manager.sync_single_product, p) for p in sentos_products]
             for future in as_completed(futures):
-                if stop_event.is_set(): executor.shutdown(wait=False, cancel_futures=True); break
+                # Stop event kontrolünü kaldır
+                # if stop_event.is_set(): executor.shutdown(wait=False, cancel_futures=True); break
                 processed = sync_manager.stats['processed']; total = len(sentos_products)
                 progress = 55 + int((processed / total) * 45) if total > 0 else 100
-                progress_callback({'progress': progress, 'message': f"İşlenen: {processed}/{total}", 'stats': sync_manager.stats.copy()})
+                safe_progress_callback({'progress': progress, 'message': f"İşlenen: {processed}/{total}", 'stats': sync_manager.stats.copy()})
         
-        progress_callback({'status': 'done', 'results': {'stats': sync_manager.stats, 'details': sync_manager.details}})
+        safe_progress_callback({'status': 'done', 'results': {'stats': sync_manager.stats, 'details': sync_manager.details}})
+        
+        return {'stats': sync_manager.stats, 'details': sync_manager.details}
+        
     except Exception as e:
-        logging.critical(f"Senkronizasyon görevi başlatılamadı veya kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
-        progress_callback({'status': 'error', 'message': str(e)})
+        logging.critical(f"Senkronizasyon görevi kritik hata: {e}\n{traceback.format_exc()}")
+        safe_progress_callback({'status': 'error', 'message': str(e)})
+        raise
