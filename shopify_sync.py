@@ -821,20 +821,52 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
         sync_manager = ProductSyncManager(shopify_api, sentos_api)
         sync_manager.stats['total'] = len(sentos_products)
 
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="SyncWorker") as executor:
-            futures = {executor.submit(sync_manager.sync_single_product, p, sync_mode, progress_callback) for p in sentos_products}
-            
-            for future in as_completed(futures):
-                if job and job.meta.get('stop_requested'):
-                    logging.warning("Durdurma sinyali alındı.")
-                    for f in futures: f.cancel()
-                    break
-
-                processed = sync_manager.stats['processed']
-                total = len(sentos_products)
-                progress = 55 + int((processed / total) * 45) if total > 0 else 100
-                progress_callback({'progress': progress, 'message': f"İşlenen: {processed}/{total}", 'stats': sync_manager.stats.copy()})
+        # Worker sayısını azalt ve batch boyutunu küçült
+        max_workers = min(max_workers, 5)  # Maksimum 5 worker
         
+        # Batch processing için ürünleri grupla
+        batch_size = 10  # Her batch'te 10 ürün
+        product_batches = [sentos_products[i:i + batch_size] for i in range(0, len(sentos_products), batch_size)]
+        
+        for batch_index, batch in enumerate(product_batches):
+            try:
+                # Her batch öncesi kısa bekleme
+                if batch_index > 0:
+                    time.sleep(2)
+                    
+                logging.info(f"🔄 Batch {batch_index + 1}/{len(product_batches)} işleniyor ({len(batch)} ürün)")
+                
+                # Batch'i paralel işle
+                with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = []
+                    for product in batch:
+                        future = executor.submit(sync_manager.sync_single_product, product, sync_mode, progress_callback)
+                        futures.append(future)
+                    
+                    # Results topla
+                    for future in as_completed(futures):
+                        try:
+                            result = future.result(timeout=60)  # 60 saniye timeout
+                            # ...existing result processing...
+                        except TimeoutError:
+                            logging.warning("⚠️ Product timeout - skipping")
+                            sync_manager.stats['failed'] += 1
+                        except Exception as e:
+                            logging.error(f"❌ Product error: {e}")
+                            sync_manager.stats['failed'] += 1
+                            
+                # Progress güncelle
+                progress = int((batch_index + 1) / len(product_batches) * 100)
+                if job:
+                    job.meta['progress'] = progress
+                    job.meta['current_batch'] = batch_index + 1
+                    job.meta['total_batches'] = len(product_batches)
+                    job.save_meta()
+                    
+            except Exception as e:
+                logging.error(f"❌ Batch {batch_index + 1} failed: {e}")
+                continue
+            
         duration = time.monotonic() - start_time
         results = {
             'stats': sync_manager.stats, 

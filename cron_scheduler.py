@@ -34,7 +34,11 @@ def trigger_auto_sync():
             logger.error("Auto sync credentials not configured in environment variables")
             return
             
-        # Sadece stok ve varyant güncellemesi için job oluştur
+        # Optimized parameters
+        batch_size = int(os.getenv('SYNC_BATCH_SIZE', '10'))
+        max_workers = int(os.getenv('SYNC_MAX_WORKERS', '3'))
+        
+        # Job oluştur - kısa timeout ile
         job = q.enqueue(
             shopify_sync.sync_products_from_sentos_api,
             shopify_store,
@@ -44,12 +48,12 @@ def trigger_auto_sync():
             sentos_api_key,
             sentos_cookie or "",
             True,  # enable_detailed_logs
-            10,    # max_workers
+            max_workers,    # optimize edilmiş worker sayısı
             "Stock & Variants Only",  # sync_mode
-            job_timeout='30m'
+            job_timeout='20m'  # 20 dakika timeout
         )
         
-        logger.info(f"Auto sync job queued successfully: {job.id}")
+        logger.info(f"Auto sync job queued: {job.id} (timeout: 20m, workers: {max_workers})")
         
         # Keep-alive ping
         app_url = os.getenv('APP_URL')

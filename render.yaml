@@ -26,8 +26,8 @@ services:
           type: redis
           name: redis-db
           property: connectionString
-      # Diğer API anahtarlarınızı Render arayüzündeki "Environment" sekmesinden
-      # eklemeyi unutmayın.
+      - key: RENDER_EXTERNAL_URL
+        value: "https://app-and-worker.onrender.com"
 
   # Servis 3: Streamlit Uygulaması
   - type: web
@@ -36,6 +36,9 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "streamlit run streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS=false"
     healthCheckPath: /_stcore/health
+    envVars:
+      - key: RENDER_EXTERNAL_URL
+        value: "https://streamlit-app.onrender.com"
 
   # Servis 4: Cron Job - Otomatik Sync
   - type: cron
@@ -43,7 +46,7 @@ services:
     env: python
     buildCommand: "pip install -r requirements.txt"
     schedule: "0 */2 * * *"  # Her 2 saatte bir (120 dakika)
-    startCommand: "python cron_scheduler.py"
+    startCommand: "timeout 25m python cron_scheduler.py"  # 25 dakika timeout
     envVars:
       - key: REDIS_URL
         fromService:
@@ -52,11 +55,23 @@ services:
           property: connectionString
       - key: APP_URL
         value: "https://app-and-worker.onrender.com"
+      - key: SYNC_BATCH_SIZE
+        value: "10"
+      - key: SYNC_MAX_WORKERS
+        value: "3"
 
-  # Servis 5: Keep-Alive Service
+  # Servis 5: Keep-Alive Service - Ana Uygulama
   - type: cron
-    name: keep-alive
+    name: keep-alive-main
     env: python
     buildCommand: "pip install requests"
-    schedule: "*/10 * * * *"  # Her 10 dakikada bir
-    startCommand: "python -c 'import requests; requests.get(\"https://app-and-worker.onrender.com/_stcore/health\")'"
+    schedule: "*/5 * * * *"  # Her 5 dakikada bir
+    startCommand: "python -c 'import requests; import time; requests.get(\"https://app-and-worker.onrender.com/_stcore/health\", timeout=30); time.sleep(2); requests.get(\"https://streamlit-app.onrender.com/_stcore/health\", timeout=30); print(\"Keep-alive ping sent\")'"
+
+  # Servis 6: Keep-Alive Service - Yedek
+  - type: cron
+    name: keep-alive-backup
+    env: python
+    buildCommand: "pip install requests"
+    schedule: "2-57/5 * * * *"  # Her 5 dakikada bir (2 dakika offset ile)
+    startCommand: "python -c 'import requests; requests.get(\"https://app-and-worker.onrender.com\", timeout=20); print(\"Backup ping sent\")'"
