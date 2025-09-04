@@ -1,8 +1,9 @@
 """
 Sentos API'den Shopify'a Ürün Senkronizasyonu Mantık Dosyası
-Versiyon 19.7: Yeni Ürünlerde de Beden Sıralamayı Garanti Etme
-- GÜNCELLEME (Final): Yeni ürün oluşturma sürecinin sonuna, seçenekleri yeniden sıralayan fonksiyon eklendi.
-  Bu sayede hem yeni oluşturulan hem de güncellenen ürünlerde beden sıralaması her zaman doğru olacaktır.
+Versiyon 20.0: RQ Entegrasyonu ve Worker İlerleme Raporlama Düzeltmesi
+- GÜNCELLEME: Arka plan görevlerinin ilerlemesini arayüze bildirebilmesi için RQ'nun 'get_current_job' mekanizması entegre edildi.
+- GÜNCELLEME: 'progress_callback' parametresi kaldırıldı, artık gereksiz.
+- TEMİZLİK: Fonksiyon parametre isimleri (sentos_user_id -> sentos_api_secret) arayüz ile tutarlı hale getirildi.
 """
 
 import requests
@@ -15,6 +16,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.auth import HTTPBasicAuth
 from urllib.parse import urljoin, urlparse
+from rq import get_current_job  # <-- GEREKLİ EKLEME
 
 # --- Loglama Konfigürasyonu ---
 logging.basicConfig(
@@ -23,7 +25,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# --- Shopify API Entegrasyon Sınıfı ---
+# --- Shopify API Entegrasyon Sınıfı (Değişiklik yok) ---
 class ShopifyAPI:
     def __init__(self, store_url, access_token):
         if not store_url: raise ValueError("Shopify Mağaza URL'si boş olamaz.")
@@ -36,7 +38,7 @@ class ShopifyAPI:
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/19.7-Sort-On-Create'
+            'User-Agent': 'Sentos-Sync-Python/20.0-RQ-Fix'
         }
         self.product_cache = {}
         self.location_id = None
@@ -169,7 +171,7 @@ class ShopifyAPI:
         logging.info(f"Shopify Lokasyon ID'si bulundu: {self.location_id}")
         return self.location_id
 
-    def load_all_products(self, progress_callback=None):
+    def load_all_products(self, progress_callback=None): # Bu callback iç kullanım için kalabilir
         total_loaded = 0
         endpoint = f'{self.rest_base_url}/products.json?limit=250&fields=id,title,variants'
         
@@ -203,7 +205,7 @@ class ShopifyAPI:
             'plan': shop_data.get('plan', {}).get('displayName', 'N/A')
         }
 
-# --- Sentos API Sınıfı ---
+# --- Sentos API Sınıfı (Değişiklik yok) ---
 class SentosAPI:
     def __init__(self, api_url, api_key, api_secret, api_cookie=None):
         self.api_url = api_url.strip().rstrip('/')
@@ -237,7 +239,7 @@ class SentosAPI:
         except requests.exceptions.RequestException as e:
             raise Exception(f"Sentos API Hatası ({url}): {e}")
     
-    def get_all_products(self, progress_callback=None, page_size=100):
+    def get_all_products(self, progress_callback=None, page_size=100): # Bu callback iç kullanım için kalabilir
         all_products, page = [], 1
         total_pages, total_elements = None, None
         
@@ -308,7 +310,7 @@ class SentosAPI:
         except Exception as e:
             return {'success': False, 'message': f'REST API failed: {e}'}
 
-# --- Senkronizasyon Yöneticisi ---
+# --- Senkronizasyon Yöneticisi (Değişiklik yok) ---
 class ProductSyncManager:
     def __init__(self, shopify_api, sentos_api):
         self.shopify = shopify_api
@@ -528,7 +530,6 @@ class ProductSyncManager:
             if adjustments := self._prepare_inventory_adjustments(sentos_variants, created_vars):
                 self._adjust_inventory_bulk(adjustments)
 
-            ### EKLENDİ: Yeni oluşturulan ürünün seçenek sırasını garanti altına al ###
             self._sync_product_options(product_gid, sentos_product)
             
             self._sync_product_media(product_gid, sentos_product)
@@ -550,7 +551,7 @@ class ProductSyncManager:
             
             if new_vars:
                 logging.info(f"{len(new_vars)} yeni varyant ekleniyor...")
-                created_variants = self._add_variants_to_product(shopify_gid, new_vars, sentos_product)
+                self._add_variants_to_product(shopify_gid, new_vars, sentos_product)
             
             self._sync_product_options(shopify_gid, sentos_product)
             
@@ -677,27 +678,32 @@ def sync_products_from_sentos_api(
     shopify_store, 
     shopify_token, 
     sentos_api_url, 
-    sentos_user_id, 
     sentos_api_key, 
+    sentos_api_secret, 
     sentos_cookie,
-    enable_detailed_logs=True, 
+    enable_detailed_logs=True, # 'test_mode' ile aynı işlevi görebilir veya ayrı mantık eklenebilir
     max_workers=10, 
-    sync_mode="Full Sync",
-    progress_callback=None
+    sync_mode="Full Sync"
+    # progress_callback parametresi kaldırıldı
 ):
     """Ana sync fonksiyonu"""
     
     # Progress callback güvenli çağrı fonksiyonu
     def safe_progress_callback(data):
-        if progress_callback and callable(progress_callback):
-            try:
-                progress_callback(data)
-            except Exception as e:
-                logging.warning(f"Progress callback hatası: {e}")
+        # Arka plan görevinin meta verisini güncelle
+        try:
+            job = get_current_job()
+            if job:
+                # Gelen yeni veriyi mevcut meta verisiyle birleştir
+                job.meta.update(data)
+                job.save_meta()
+        except Exception as e:
+            logging.warning(f"RQ meta verisi güncellenirken hata oluştu: {e}")
     
     try:
         shopify_api = ShopifyAPI(shopify_store, shopify_token)
-        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_user_id, sentos_cookie)
+        # 'sentos_user_id' yerine 'sentos_api_secret' kullanılıyor, daha anlaşılır.
+        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
 
         safe_progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 5})
         shopify_api.load_all_products(progress_callback=safe_progress_callback)
@@ -708,11 +714,6 @@ def sync_products_from_sentos_api(
         if not sentos_products:
             return {'stats': {'message': 'Sentos\'ta senkronize edilecek ürün bulunamadı.'}, 'details': []}
 
-        # Problematik satırları kaldır
-        # logging.info("Ana işlem, Shopify önbelleğinin tamamlanmasını bekliyor...")
-        # shopify_load_thread.join()
-        # logging.info("Shopify önbelleği hazır. Ana işlem devam ediyor.")
-        
         safe_progress_callback({'message': f"{len(sentos_products)} ürün senkronize ediliyor...", 'progress': 55})
         
         sync_manager = ProductSyncManager(shopify_api, sentos_api)
@@ -721,8 +722,6 @@ def sync_products_from_sentos_api(
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(sync_manager.sync_single_product, p) for p in sentos_products]
             for future in as_completed(futures):
-                # Stop event kontrolünü kaldır
-                # if stop_event.is_set(): executor.shutdown(wait=False, cancel_futures=True); break
                 processed = sync_manager.stats['processed']; total = len(sentos_products)
                 progress = 55 + int((processed / total) * 45) if total > 0 else 100
                 safe_progress_callback({'progress': progress, 'message': f"İşlenen: {processed}/{total}", 'stats': sync_manager.stats.copy()})

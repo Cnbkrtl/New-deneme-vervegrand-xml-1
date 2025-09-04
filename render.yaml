@@ -1,30 +1,13 @@
-# render.yaml (NİHAİ VE DOĞRU VERSİYON)
+# render.yaml (Önerilen Yeni Hali)
 
 services:
-  # Servis 1: Redis Veritabanı
+  # Servis 1: Redis Veritabanı (Değişiklik yok)
   - type: redis
     name: redis-db
     plan: free
     ipAllowList: []
 
-  # Servis 2: Web Servisi ve Worker
-  - type: web
-    name: app-and-worker
-    env: python
-    plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python -m honcho start"
-    healthCheckPath: /_stcore/health
-    envVars:
-      - key: REDIS_URL
-        fromService:
-          type: redis
-          name: redis-db
-          property: connectionString
-      - key: RENDER_EXTERNAL_URL
-        value: "https://app-and-worker.onrender.com"
-
-  # Servis 3: Streamlit Uygulaması
+  # Servis 2: Streamlit Web Uygulaması
   - type: web
     name: streamlit-app
     env: python
@@ -32,16 +15,37 @@ services:
     startCommand: "streamlit run streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS=false"
     healthCheckPath: /_stcore/health
     envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis-db
+          property: connectionString
       - key: RENDER_EXTERNAL_URL
-        value: "https://streamlit-app.onrender.com"
+        fromService:
+          type: web
+          name: streamlit-app
+          property: url
 
-  # Servis 4: Cron Job - Otomatik Sync (Orijinal çalışan versiyon)
+  # Servis 3: Arka Plan İşçisi (YENİ VE DOĞRU YAPI)
+  - type: worker
+    name: rq-worker
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python worker.py" # Doğrudan worker'ı başlatır
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis-db
+          property: connectionString
+
+  # Servis 4: Cron Job - Otomatik Sync (Değişiklik yok)
   - type: cron
     name: auto-sync-scheduler
     env: python
     buildCommand: "pip install -r requirements.txt"
-    schedule: "0 */2 * * *"  # Her 2 saatte bir (orijinal ayar)
-    startCommand: "timeout 25m python cron_scheduler.py"  # Orijinal timeout
+    schedule: "0 */2 * * *"
+    startCommand: "timeout 25m python cron_scheduler.py"
     envVars:
       - key: REDIS_URL
         fromService:
@@ -49,24 +53,15 @@ services:
           name: redis-db
           property: connectionString
       - key: APP_URL
-        value: "https://app-and-worker.onrender.com"
-      - key: SYNC_BATCH_SIZE
-        value: "10"  # Orijinal değer
-      - key: SYNC_MAX_WORKERS
-        value: "3"   # Orijinal değer
+        fromService:
+          type: web
+          name: streamlit-app
+          property: url
 
-  # Servis 5: Keep-Alive Service - Ana Uygulama (Orijinal)
+  # Servis 5: Keep-Alive Service (Tek servis yeterli ve daha basit)
   - type: cron
-    name: keep-alive-main
+    name: keep-alive
     env: python
     buildCommand: "pip install requests"
-    schedule: "*/5 * * * *"  # Her 5 dakikada bir (orijinal)
-    startCommand: "python -c 'import requests; import time; requests.get(\"https://app-and-worker.onrender.com/_stcore/health\", timeout=30); time.sleep(2); requests.get(\"https://streamlit-app.onrender.com/_stcore/health\", timeout=30); print(\"Keep-alive ping sent\")'"
-
-  # Servis 6: Keep-Alive Service - Yedek (Orijinal)
-  - type: cron
-    name: keep-alive-backup
-    env: python
-    buildCommand: "pip install requests"
-    schedule: "2-57/5 * * * *"  # Her 5 dakikada bir (2 dakika offset ile)
-    startCommand: "python -c 'import requests; requests.get(\"https://app-and-worker.onrender.com\", timeout=20); print(\"Backup ping sent\")'"
+    schedule: "*/5 * * * *"
+    startCommand: "python keep_alive.py" # Ayrı bir betik ile daha temiz yönetim
