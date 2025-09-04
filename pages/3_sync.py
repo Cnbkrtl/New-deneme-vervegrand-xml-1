@@ -76,7 +76,7 @@ else:
         test_mode = st.checkbox("Test Modu (İlk 20 ürünü senkronize et)", value=True, help="Tam bir senkronizasyon çalıştırmadan bağlantıyı ve mantığı test etmek için yalnızca Sentos'tan ilk 20 ürünü işler.")
     with col_opts2:
         max_workers = st.number_input(
-            "Eşzamanlı İşlem Sayısı", min_value=1, max_value=10, value=3, 
+            "Eşzamanlı İşlem Sayısı", min_value=1, max_value=50, value=5, 
             help="Paralel olarak işlenecek ürün sayısı. API hız sınırlarını aşmamak için dikkatli artırın."
         )
 
