@@ -1,8 +1,9 @@
 import streamlit as st
-from config_manager import save_all_keys
+# GÜNCELLEME: Modülün tamamı import ediliyor
+import config_manager 
 from shopify_sync import ShopifyAPI, SentosAPI
 
-# --- GÜNCELLEME: Giriş kontrolü "authentication_status" olarak düzeltildi ---
+# Giriş kontrolü
 if not st.session_state.get("authentication_status"):
     st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
     st.stop()
@@ -86,7 +87,8 @@ with st.form("settings_form"):
 
     if submitted:
         # 1. Ayarları Kaydet
-        if save_all_keys(
+        # GÜNCELLEME: Fonksiyon, import edilen modül üzerinden çağrılıyor
+        if config_manager.save_all_keys(
             shopify_store=shopify_store,
             shopify_token=shopify_token,
             sentos_api_url=sentos_api_url,
@@ -116,7 +118,6 @@ with st.form("settings_form"):
 
             with st.spinner("Sentos bağlantısı test ediliyor..."):
                 if sentos_api_url and sentos_api_key and sentos_api_secret:
-                    # GÜNCELLEME: Cookie de test fonksiyonuna eklendi
                     test_sentos_connection(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
                 else:
                     st.warning("Sentos ayarları eksik.")
