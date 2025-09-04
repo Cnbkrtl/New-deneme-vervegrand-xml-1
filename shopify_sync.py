@@ -767,8 +767,6 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
         logging.critical(f"Senkronizasyon görevi başlatılamadı veya kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
 
-
-# --- YENİ: Zamanlanmış Görevler için Wrapper Fonksiyonu ---
 def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie):
     """
     Bu fonksiyon, RQ worker tarafından çalıştırılmak üzere tasarlanmıştır.
@@ -777,7 +775,7 @@ def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, s
     """
     logging.info("Zamanlanmış (cron) senkronizasyon görevi başlatılıyor...")
     
-    # Gerçek bir arayüz olmadığı için progress_callback loglama yapar
+    # Gerçek bir arayüz olmadığı için progress_callback sadece loglama yapar
     def cron_progress_callback(data):
         if message := data.get('message'):
             logging.info(f"[CRON-PROGRESS] {message}")
@@ -799,7 +797,7 @@ def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, s
             test_mode=False,  # Cron job'lar her zaman tam çalışır
             progress_callback=cron_progress_callback,
             stop_event=dummy_stop_event,
-            max_workers=2,  # Cron job için daha az worker
+            max_workers=2,  # Cron job için daha az worker yeterlidir
             sync_mode="Stock & Variants Only"  # Cron genellikle sadece stok günceller
         )
         logging.info("Zamanlanmış senkronizasyon görevi başarıyla tamamlandı.")

@@ -1,84 +1,67 @@
 import os
-import requests
 import redis
 from rq import Queue
-import shopify_sync
-from datetime import datetime
+# Ana sync dosyasından SADECE cron için olan wrapper fonksiyonunu import et
+from shopify_sync import run_sync_for_cron 
+from config_manager import load_all_keys # Ayarları güvenli dosyadan okumak için
 import logging
 
-# Logging setup
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 def trigger_auto_sync():
-    """Otomatik sync işlemini tetikle"""
+    """Otomatik sync işlemini Redis Queue'ya görev olarak ekler."""
     try:
-        # Redis bağlantısı
         redis_url = os.getenv('REDIS_URL')
         if not redis_url:
-            logger.error("REDIS_URL environment variable not found")
+            logger.error("REDIS_URL ortam değişkeni bulunamadı!")
             return
             
         r = redis.from_url(redis_url)
         q = Queue('default', connection=r)
         
-        # Auto sync parametreleri (environment variables'dan al)
-        shopify_store = os.getenv('AUTO_SYNC_SHOPIFY_STORE')
-        shopify_token = os.getenv('AUTO_SYNC_SHOPIFY_TOKEN')
-        sentos_api_url = os.getenv('AUTO_SYNC_SENTOS_API_URL')
-        sentos_user_id = os.getenv('AUTO_SYNC_SENTOS_USER_ID')
-        sentos_api_key = os.getenv('AUTO_SYNC_SENTOS_API_KEY')
-        sentos_cookie = os.getenv('AUTO_SYNC_SENTOS_COOKIE')
-        
-        if not all([shopify_store, shopify_token, sentos_api_url, sentos_user_id, sentos_api_key]):
-            logger.error("Auto sync credentials not configured in environment variables")
+        # Streamlit arayüzünden kaydedilmiş, şifreli ayarları yükle
+        # NOT: Bu yapı, sistemde kayıtlı ilk kullanıcının ayarlarını kullanır.
+        # Eğer birden fazla kullanıcı hesabı yönetiyorsanız, cron'un hangi 
+        # kullanıcı için çalışacağını burada belirlemeniz gerekebilir.
+        all_creds = load_all_keys()
+        if not all_creds:
+            logger.error("Otomatik sync için config dosyasında kayıtlı ayar bulunamadı.")
+            return
+
+        # Yapılandırma dosyasındaki ilk kullanıcı ayarlarını al
+        # Kullanıcı adı önemli değil, sadece ilk ayar setini alıyoruz.
+        first_user_key = next(iter(all_creds))
+        creds = all_creds[first_user_key]
+
+        # Gerekli parametreleri bir sözlük (dictionary) olarak hazırla
+        task_kwargs = {
+            "store_url": creds.get('shopify_store'),
+            "access_token": creds.get('shopify_token'),
+            "sentos_api_url": creds.get('sentos_api_url'),
+            "sentos_api_key": creds.get('sentos_api_key'),
+            "sentos_api_secret": creds.get('sentos_api_secret'),
+            "sentos_cookie": creds.get('sentos_cookie')
+        }
+
+        # Eğer herhangi bir ayar eksikse, görevi başlatma ve hata ver
+        if not all(task_kwargs.values()):
+            logger.error(f"Otomatik sync için '{first_user_key}' kullanıcısının ayarları eksik. Lütfen kontrol edin.")
             return
             
-        # Optimized parameters - daha küçük değerler
-        batch_size = int(os.getenv('SYNC_BATCH_SIZE', '5'))
-        max_workers = int(os.getenv('SYNC_MAX_WORKERS', '2'))
-        
-        # Job oluştur - daha kısa timeout ile
+        # Doğru fonksiyonu (`run_sync_for_cron`) doğru parametrelerle kuyruğa ekle
         job = q.enqueue(
-            shopify_sync.sync_products_from_sentos_api,
-            shopify_store,
-            shopify_token,
-            sentos_api_url,
-            sentos_user_id,
-            sentos_api_key,
-            sentos_cookie or "",
-            True,  # enable_detailed_logs
-            max_workers,    # optimize edilmiş worker sayısı
-            "Stock & Variants Only",  # sync_mode
-            job_timeout='12m'  # 20'den 12 dakikaya düşürüldü
+            run_sync_for_cron,
+            kwargs=task_kwargs, # Parametreleri keyword olarak gönder
+            job_timeout='2h'   # Görev en fazla 2 saat sürebilir
         )
         
-        # Global state'i Redis'e kaydet
-        import json
-        state_data = {
-            'sync_status': 'running',
-            'sync_job_id': job.id,
-            'sync_start_time': datetime.now().isoformat(),
-            'sync_type': 'auto_cron',
-            'last_update': datetime.now().isoformat()
-        }
-        r.setex('global_sync_state', 3600, json.dumps(state_data))
-        
-        logger.info(f"Auto sync job queued: {job.id} (timeout: 12m, workers: {max_workers}, batch: {batch_size})")
-        
-        # Keep-alive ping
-        app_url = os.getenv('APP_URL')
-        if app_url:
-            try:
-                requests.get(f"{app_url}/_stcore/health", timeout=10)
-                logger.info("Keep-alive ping sent successfully")
-            except Exception as e:
-                logger.warning(f"Keep-alive ping failed: {e}")
+        logger.info(f"Otomatik senkronizasyon görevi başarıyla kuyruğa eklendi. Job ID: {job.id}")
                 
     except Exception as e:
-        logger.error(f"Auto sync failed: {e}")
+        logger.error(f"Otomatik sync tetiklenirken hata oluştu: {e}", exc_info=True)
 
 if __name__ == "__main__":
-    logger.info(f"Starting auto sync at {datetime.now()}")
+    logger.info("Otomatik sync tetikleyicisi çalıştırılıyor...")
     trigger_auto_sync()
-    logger.info("Auto sync trigger completed")
+    logger.info("Otomatik sync tetikleyicisi tamamlandı.")
