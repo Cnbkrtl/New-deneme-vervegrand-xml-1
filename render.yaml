@@ -33,6 +33,5 @@ services:
   - type: web
     name: streamlit-app
     env: python
-    rootDir: New-deneme-vervegrand-xml-1
     buildCommand: "poetry install"
     startCommand: "streamlit run streamlit_app.py --server.port $PORT --server.enableCORS=false"
