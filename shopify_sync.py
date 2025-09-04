@@ -767,26 +767,23 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
         logging.critical(f"Senkronizasyon görevi başlatılamadı veya kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
 
-def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie):
+def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, sync_mode="Stock & Variants Only", max_workers=2):
     """
     Bu fonksiyon, RQ worker tarafından çalıştırılmak üzere tasarlanmıştır.
     Ana senkronizasyon fonksiyonunu, cron job için gerekli olan sahte (dummy)
-    parametrelerle çağırır.
+    parametrelerle ve belirtilen sync_mode ile çağırır.
     """
-    logging.info("Zamanlanmış (cron) senkronizasyon görevi başlatılıyor...")
+    logging.info(f"Zamanlanmış (cron) senkronizasyon görevi başlatılıyor... Mod: {sync_mode}")
     
-    # Gerçek bir arayüz olmadığı için progress_callback sadece loglama yapar
     def cron_progress_callback(data):
         if message := data.get('message'):
             logging.info(f"[CRON-PROGRESS] {message}")
         if stats := data.get('stats'):
             logging.info(f"[CRON-STATS] {stats}")
 
-    # Durdurma olayı (stop_event) cron için geçerli değil, sahte bir olay oluşturulur
     dummy_stop_event = threading.Event()
 
     try:
-        # Ana fonksiyonu çağır
         sync_products_from_sentos_api(
             store_url=store_url,
             access_token=access_token,
@@ -794,11 +791,11 @@ def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, s
             sentos_api_key=sentos_api_key,
             sentos_api_secret=sentos_api_secret,
             sentos_cookie=sentos_cookie,
-            test_mode=False,  # Cron job'lar her zaman tam çalışır
+            test_mode=False,
             progress_callback=cron_progress_callback,
             stop_event=dummy_stop_event,
-            max_workers=2,  # Cron job için daha az worker yeterlidir
-            sync_mode="Stock & Variants Only"  # Cron genellikle sadece stok günceller
+            max_workers=max_workers,
+            sync_mode=sync_mode
         )
         logging.info("Zamanlanmış senkronizasyon görevi başarıyla tamamlandı.")
     except Exception as e:

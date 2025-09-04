@@ -1,93 +1,92 @@
 import streamlit as st
-from config_manager import save_user_keys # save_all_keys yerine save_user_keys
+from config_manager import save_all_keys
 from shopify_sync import ShopifyAPI, SentosAPI
-import os # Ortam değişkenlerini okumak için eklendi
 
-# Giriş kontrolü
+# --- GÜNCELLEME: Giriş kontrolü "authentication_status" olarak düzeltildi ---
 if not st.session_state.get("authentication_status"):
-    st.error("Please log in to access this page.")
+    st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
     st.stop()
 
 # --- AYARLAR SAYFASI ---
 st.markdown("""
 <div class="main-header">
-    <h1>⚙️ Settings</h1>
-    <p>Configure API connections. Settings are saved automatically for your user.</p>
+    <h1>⚙️ Ayarlar</h1>
+    <p>API bağlantılarını yapılandırın. Ayarlarınız şifrelenir ve otomatik olarak kaydedilir.</p>
 </div>
 """, unsafe_allow_html=True)
 
+# Test fonksiyonları (değişiklik yok)
 def test_shopify_connection(store, token):
     try:
         api = ShopifyAPI(store, token)
         result = api.test_connection()
         st.session_state.shopify_status = 'connected'
         st.session_state.shopify_data = result
-        st.success("✅ Shopify connected successfully!")
+        st.success("✅ Shopify bağlantısı başarılı!")
     except Exception as e:
         st.session_state.shopify_status = 'failed'
-        st.error(f"❌ Shopify Connection failed: {e}")
+        st.error(f"❌ Shopify Bağlantısı kurulamadı: {e}")
 
-def test_sentos_connection(url, key, secret):
+def test_sentos_connection(url, key, secret, cookie):
     try:
-        api = SentosAPI(url, key, secret)
+        api = SentosAPI(url, key, secret, cookie)
         result = api.test_connection()
         if result.get('success'):
             st.session_state.sentos_status = 'connected'
             st.session_state.sentos_data = result
-            st.success(f"✅ Sentos connected successfully! Found {result.get('total_products', 0)} products.")
+            st.success(f"✅ Sentos bağlantısı başarılı! {result.get('total_products', 0)} ürün bulundu.")
         else:
-            raise Exception(result.get('message', 'Unknown error'))
+            raise Exception(result.get('message', 'Bilinmeyen hata'))
     except Exception as e:
         st.session_state.sentos_status = 'failed'
-        st.error(f"❌ Sentos Connection failed: {e}")
+        st.error(f"❌ Sentos Bağlantısı kurulamadı: {e}")
 
 # --- AYAR FORMU ---
 with st.form("settings_form"):
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("🏪 Shopify Settings")
-        # GÜNCELLEME: Değerler önce ortam değişkeninden (os.getenv) okunur.
+        st.subheader("🏪 Shopify Ayarları")
         shopify_store = st.text_input(
-            "Store URL", 
-            value=os.getenv("SHOPIFY_STORE", st.session_state.get('shopify_store', '')),
+            "Mağaza URL", 
+            value=st.session_state.get('shopify_store', ''),
             placeholder="your-store.myshopify.com"
         )
         shopify_token = st.text_input(
-            "Access Token", 
-            value=os.getenv("SHOPIFY_TOKEN", st.session_state.get('shopify_token', '')),
+            "Erişim Token'ı", 
+            value=st.session_state.get('shopify_token', ''),
             type="password"
         )
     
     with col2:
-        st.subheader("Sentos API Settings")
+        st.subheader("Sentos API Ayarları")
         sentos_api_url = st.text_input(
             "Sentos API URL", 
-            value=os.getenv("SENTOS_API_URL", st.session_state.get('sentos_api_url', '')),
+            value=st.session_state.get('sentos_api_url', ''),
             placeholder="https://stildiva.sentos.com.tr/api"
         )
         sentos_api_key = st.text_input(
             "Sentos API Key", 
-            value=os.getenv("SENTOS_API_KEY", st.session_state.get('sentos_api_key', ''))
+            value=st.session_state.get('sentos_api_key', '')
         )
         sentos_api_secret = st.text_input(
             "Sentos API Secret", 
-            value=os.getenv("SENTOS_API_SECRET", st.session_state.get('sentos_api_secret', '')),
+            value=st.session_state.get('sentos_api_secret', ''),
             type="password"
         )
         sentos_cookie = st.text_input(
             "Sentos API Cookie",
-            value=os.getenv("SENTOS_COOKIE", st.session_state.get('sentos_cookie', '')),
-            type="password"
+            value=st.session_state.get('sentos_cookie', ''),
+            type="password",
+            help="Resim sırasını doğru çekmek için Sentos panelinden alınan Cookie değeri."
         )
 
     st.markdown("---")
-    submitted = st.form_submit_button("💾 Save & Test Connections", use_container_width=True, type="primary")
+    submitted = st.form_submit_button("💾 Kaydet ve Bağlantıları Test Et", use_container_width=True, type="primary")
 
     if submitted:
-        current_username = st.session_state.get("username")
-        if save_user_keys(
-            username=current_username,
+        # 1. Ayarları Kaydet
+        if save_all_keys(
             shopify_store=shopify_store,
             shopify_token=shopify_token,
             sentos_api_url=sentos_api_url,
@@ -95,19 +94,32 @@ with st.form("settings_form"):
             sentos_api_secret=sentos_api_secret,
             sentos_cookie=sentos_cookie
         ):
-            st.success("✅ Settings saved for user!")
+            st.success("✅ Tüm ayarlar kaydedildi ve şifrelendi!")
             
-            # Session state'i yeni değerlerle güncelle
-            st.session_state.update({
-                'shopify_store': shopify_store, 'shopify_token': shopify_token,
-                'sentos_api_url': sentos_api_url, 'sentos_api_key': sentos_api_key,
-                'sentos_api_secret': sentos_api_secret, 'sentos_cookie': sentos_cookie
-            })
+            # 2. Session state'i yeni değerlerle güncelle
+            st.session_state.shopify_store = shopify_store
+            st.session_state.shopify_token = shopify_token
+            st.session_state.sentos_api_url = sentos_api_url
+            st.session_state.sentos_api_key = sentos_api_key
+            st.session_state.sentos_api_secret = sentos_api_secret
+            st.session_state.sentos_cookie = sentos_cookie
             
-            st.info("Re-testing connections...")
-            if shopify_store and shopify_token:
-                test_shopify_connection(shopify_store, shopify_token)
-            if sentos_api_url and sentos_api_key and sentos_api_secret:
-                test_sentos_connection(sentos_api_url, sentos_api_key, sentos_api_secret)
+            # 3. Yeni bilgilerle bağlantıları otomatik olarak yeniden test et
+            st.info("Yeni ayarlarla bağlantılar yeniden test ediliyor...")
+            
+            with st.spinner("Shopify bağlantısı test ediliyor..."):
+                if shopify_store and shopify_token:
+                    test_shopify_connection(shopify_store, shopify_token)
+                else:
+                    st.warning("Shopify ayarları eksik.")
+                    st.session_state.shopify_status = 'pending'
+
+            with st.spinner("Sentos bağlantısı test ediliyor..."):
+                if sentos_api_url and sentos_api_key and sentos_api_secret:
+                    # GÜNCELLEME: Cookie de test fonksiyonuna eklendi
+                    test_sentos_connection(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
+                else:
+                    st.warning("Sentos ayarları eksik.")
+                    st.session_state.sentos_status = 'pending'
         else:
-            st.error("❌ Failed to save settings.")
+            st.error("❌ Ayarlar kaydedilemedi.")

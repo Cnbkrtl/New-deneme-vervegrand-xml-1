@@ -9,7 +9,6 @@ from log_manager import save_log
 from shopify_sync import sync_products_from_sentos_api
 
 # --- Session State Başlatma ---
-# Bu değerler sayfa yenilense bile korunur
 if 'sync_thread' not in st.session_state:
     st.session_state.sync_thread = None
 if 'stop_event' not in st.session_state:
@@ -39,7 +38,6 @@ st.markdown("""
 
 
 # --- Arayüz Mantığı ---
-# API bağlantıları ayarlar sayfasında test edilmiş olmalı
 sync_ready = (st.session_state.get('shopify_status') == 'connected' and 
               st.session_state.get('sentos_status') == 'connected')
 
@@ -60,7 +58,8 @@ if not st.session_state.sync_running:
                 "Images with SEO Alt Text", 
                 "Descriptions Only", 
                 "Categories (Product Type) Only"
-            ]
+            ],
+            key="selected_sync_mode" # GÜNCELLEME: Key eklendi
         )
         test_mode = st.checkbox("Test Modu (Sadece ilk 20 ürünü senkronize et)", value=True)
         max_workers = st.number_input("Eşzamanlı İşlem Sayısı (Worker)", min_value=1, max_value=10, value=3)
@@ -68,19 +67,15 @@ if not st.session_state.sync_running:
         submitted = st.form_submit_button("🚀 Senkronizasyonu Başlat", type="primary", use_container_width=True, disabled=not sync_ready)
 
         if submitted:
-            # Yeni bir sync başlatmak için state'leri hazırla
             st.session_state.sync_running = True
             st.session_state.sync_results = None
             st.session_state.live_log_details = []
             st.session_state.stop_event = threading.Event()
             st.session_state.progress_queue = queue.Queue()
 
-            # Callback fonksiyonu: Thread'den gelen veriyi kuyruğa atar
             def progress_callback(data):
                 st.session_state.progress_queue.put(data)
 
-            # Arka plan thread'ine verilecek argümanları bir sözlük (kwargs) olarak hazırla
-            # Bu yöntem, parametre sırası hatalarını tamamen engeller.
             thread_kwargs = {
                 'store_url': st.session_state.shopify_store,
                 'access_token': st.session_state.shopify_token,
@@ -95,10 +90,9 @@ if not st.session_state.sync_running:
                 'sync_mode': sync_mode
             }
 
-            # Thread'i oluştur ve başlat
             st.session_state.sync_thread = threading.Thread(
                 target=sync_products_from_sentos_api, 
-                kwargs=thread_kwargs, # Argümanları kwargs olarak ver
+                kwargs=thread_kwargs,
                 daemon=True
             )
             st.session_state.sync_thread.start()
@@ -116,17 +110,14 @@ if st.session_state.sync_running:
     
     st.markdown("---")
 
-    # Arayüz elemanları için yer tutucular
     progress_bar = st.progress(0, text="Başlatılıyor...")
     stats_placeholder = st.empty()
     log_expander = st.expander("Canlı Ürün Loglarını Göster", expanded=True)
     with log_expander:
         log_placeholder = st.empty()
 
-    # Thread bitene kadar veya durdurulana kadar arayüzü güncelle
     while st.session_state.sync_thread and st.session_state.sync_thread.is_alive():
         try:
-            # Kuyruktan en son veriyi al
             update = st.session_state.progress_queue.get(timeout=1)
             
             if 'progress' in update:
@@ -162,14 +153,11 @@ if st.session_state.sync_running:
                 break
 
         except queue.Empty:
-            # Kuyrukta yeni veri yoksa beklemeye devam et
             time.sleep(1)
 
-    # Thread bittiğinde state'i temizle ve sayfayı yenile
     if not (st.session_state.sync_thread and st.session_state.sync_thread.is_alive()):
         st.session_state.sync_running = False
         st.session_state.sync_thread = None
-        # Sonuçları göstermek için sayfayı yenilemeden önce kısa bekleme
         if st.session_state.sync_results:
              time.sleep(3)
         st.rerun()
@@ -192,7 +180,7 @@ if st.session_state.sync_results:
         col4.metric("❌ Başarısız", stats.get('failed', 0))
         col5.metric("⏭️ Atlanan", stats.get('skipped', 0))
         
-        # Logları kaydet
+        # GÜNCELLEME: Doğru sync_mode değişkeni log'a kaydediliyor.
         results['sync_mode'] = st.session_state.get('selected_sync_mode', 'N/A')
         save_log(results)
 
