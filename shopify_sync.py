@@ -1,9 +1,8 @@
 """
 Sentos API'den Shopify'a Ürün Senkronizasyonu Mantık Dosyası
-Versiyon 20.0: RQ Entegrasyonu ve Worker İlerleme Raporlama Düzeltmesi
+Versiyon 20.1: Gelişmiş Hata Yönetimi ve RQ Entegrasyonu
+- GÜNCELLEME: Sentos'tan geçersiz cookie nedeniyle JSON hatası alındığında daha anlaşılır loglama eklendi.
 - GÜNCELLEME: Arka plan görevlerinin ilerlemesini arayüze bildirebilmesi için RQ'nun 'get_current_job' mekanizması entegre edildi.
-- GÜNCELLEME: 'progress_callback' parametresi kaldırıldı, artık gereksiz.
-- TEMİZLİK: Fonksiyon parametre isimleri (sentos_user_id -> sentos_api_secret) arayüz ile tutarlı hale getirildi.
 """
 
 import requests
@@ -16,7 +15,7 @@ import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.auth import HTTPBasicAuth
 from urllib.parse import urljoin, urlparse
-from rq import get_current_job  # <-- GEREKLİ EKLEME
+from rq import get_current_job
 
 # --- Loglama Konfigürasyonu ---
 logging.basicConfig(
@@ -25,7 +24,7 @@ logging.basicConfig(
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 
-# --- Shopify API Entegrasyon Sınıfı (Değişiklik yok) ---
+# --- Shopify API Entegrasyon Sınıfı ---
 class ShopifyAPI:
     def __init__(self, store_url, access_token):
         if not store_url: raise ValueError("Shopify Mağaza URL'si boş olamaz.")
@@ -38,7 +37,7 @@ class ShopifyAPI:
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/20.0-RQ-Fix'
+            'User-Agent': 'Sentos-Sync-Python/20.1-Robust-Errors'
         }
         self.product_cache = {}
         self.location_id = None
@@ -171,7 +170,7 @@ class ShopifyAPI:
         logging.info(f"Shopify Lokasyon ID'si bulundu: {self.location_id}")
         return self.location_id
 
-    def load_all_products(self, progress_callback=None): # Bu callback iç kullanım için kalabilir
+    def load_all_products(self, progress_callback=None):
         total_loaded = 0
         endpoint = f'{self.rest_base_url}/products.json?limit=250&fields=id,title,variants'
         
@@ -205,7 +204,7 @@ class ShopifyAPI:
             'plan': shop_data.get('plan', {}).get('displayName', 'N/A')
         }
 
-# --- Sentos API Sınıfı (Değişiklik yok) ---
+# --- Sentos API Sınıfı ---
 class SentosAPI:
     def __init__(self, api_url, api_key, api_secret, api_cookie=None):
         self.api_url = api_url.strip().rstrip('/')
@@ -239,7 +238,7 @@ class SentosAPI:
         except requests.exceptions.RequestException as e:
             raise Exception(f"Sentos API Hatası ({url}): {e}")
     
-    def get_all_products(self, progress_callback=None, page_size=100): # Bu callback iç kullanım için kalabilir
+    def get_all_products(self, progress_callback=None, page_size=100):
         all_products, page = [], 1
         total_pages, total_elements = None, None
         
@@ -275,15 +274,11 @@ class SentosAPI:
 
         try:
             endpoint = "/urun_sayfalari/include/ajax/fetch_urunresimler.php"
-            payload = {
-                'draw': '1', 'start': '0', 'length': '100',
-                'search[value]': '', 'search[regex]': 'false',
-                'urun': product_id, 'model': '0', 'renk': '0',
-                'order[0][column]': '0', 'order[0][dir]': 'desc'
-            }
+            payload = { 'draw': '1', 'start': '0', 'length': '100', 'search[value]': '', 'search[regex]': 'false', 'urun': product_id, 'model': '0', 'renk': '0', 'order[0][column]': '0', 'order[0][dir]': 'desc' }
 
             logging.info(f"Ürün ID {product_id} için sıralı resimler çekiliyor...")
             response = self._make_request("POST", endpoint, auth_type='cookie', data=payload, is_internal_call=True)
+            
             response_json = response.json()
 
             ordered_urls = []
@@ -296,11 +291,14 @@ class SentosAPI:
 
             logging.info(f"{len(ordered_urls)} adet sıralı resim URL'si bulundu.")
             return ordered_urls
+        except requests.exceptions.JSONDecodeError:
+            logging.error(f"Sıralı resimler çekilirken JSON hatası (Ürün ID: {product_id}). Muhtemelen Cookie geçersiz. Sentos'tan boş veya HTML yanıtı alındı.")
+            return [] # Boş liste döndürerek işlemi durdurma
         except ValueError as ve:
             logging.error(f"Resim sırası alınamadı: {ve}")
             return None
         except Exception as e:
-            logging.error(f"Sıralı resimler çekilirken hata oluştu (Ürün ID: {product_id}): {e}")
+            logging.error(f"Sıralı resimler çekilirken genel bir hata oluştu (Ürün ID: {product_id}): {e}")
             return []
 
     def test_connection(self):
@@ -310,7 +308,7 @@ class SentosAPI:
         except Exception as e:
             return {'success': False, 'message': f'REST API failed: {e}'}
 
-# --- Senkronizasyon Yöneticisi (Değişiklik yok) ---
+# --- Senkronizasyon Yöneticisi ---
 class ProductSyncManager:
     def __init__(self, shopify_api, sentos_api):
         self.shopify = shopify_api
@@ -335,8 +333,7 @@ class ProductSyncManager:
         c = sorted(list(set(self._get_variant_color(x) for x in v if self._get_variant_color(x))))
         
         unique_sizes = list(set(self._get_variant_size(x) for x in v if self._get_variant_size(x)))
-        logging.info(f"Sıralanmamış benzersiz bedenler: {unique_sizes}")
-
+        
         def get_numerical_sort_key(size_str):
             if not isinstance(size_str, str): return (9999, size_str)
             numbers = re.findall(r'\d+', size_str)
@@ -345,7 +342,6 @@ class ProductSyncManager:
             return (9999, size_str)
 
         s = sorted(unique_sizes, key=get_numerical_sort_key)
-        logging.info(f"Sayısal olarak sıralanmış bedenler: {s}")
         
         o=[]
         if c:o.append({"name":"Renk","values":[{"name":x} for x in c]})
@@ -354,7 +350,6 @@ class ProductSyncManager:
         return i
 
     def _sync_product_options(self, product_gid, sentos_product):
-        logging.info(f"Ürün {product_gid} için seçenek sıralaması kontrol ediliyor...")
         v = sentos_product.get('variants', []) or [sentos_product]
 
         colors = sorted(list(set(self._get_variant_color(x) for x in v if self._get_variant_color(x))))
@@ -374,16 +369,12 @@ class ProductSyncManager:
             options_input.append({"name": "Beden", "values": [{"name": s} for s in sizes]})
         
         if not options_input:
-            logging.info("Yeniden sıralanacak seçenek bulunamadı.")
             return
 
         query = """
         mutation productOptionsReorder($productId: ID!, $options: [OptionReorderInput!]!) {
           productOptionsReorder(productId: $productId, options: $options) {
-            userErrors {
-              field
-              message
-            }
+            userErrors { field message }
           }
         }
         """
@@ -513,7 +504,6 @@ class ProductSyncManager:
                 raise Exception(f"Ürün oluşturulamadı: {errors}")
             
             product_gid = created_product_data['product']['id']
-            logging.info(f"Aşama 1 tamamlandı. Ürün GID: {product_gid}")
             
             sentos_variants = sentos_product.get('variants', []) or [sentos_product]
             variants_input = [self._prepare_variant_bulk_input(v, sentos_product, c=True) for v in sentos_variants]
@@ -525,7 +515,6 @@ class ProductSyncManager:
             }"""
             created_vars_data = self.shopify.execute_graphql(bulk_q, {'pId': product_gid, 'v': variants_input}).get('productVariantsBulkCreate', {})
             created_vars = created_vars_data.get('productVariants', [])
-            logging.info(f"Aşama 2 tamamlandı. {len(created_vars)} varyant eklendi.")
             
             if adjustments := self._prepare_inventory_adjustments(sentos_variants, created_vars):
                 self._adjust_inventory_bulk(adjustments)
@@ -575,7 +564,7 @@ class ProductSyncManager:
     def _add_variants_to_product(self, product_gid, new_variants, main_product):
         v_in = [self._prepare_variant_bulk_input(v, main_product, c=True) for v in new_variants]
         bulk_q="""mutation pVBC($pId:ID!,$v:[ProductVariantsBulkInput!]!){productVariantsBulkCreate(productId:$pId,variants:$v){productVariants{id inventoryItem{id sku}} userErrors{field message}}}"""
-        res=self.shopify.execute_graphql(bulk_q,{"productId":product_gid,"variants":v_in})
+        res=self.shopify.execute_graphql(bulk_q,{"pId":product_gid,"v":v_in}) # pId'yi productId olarak değiştirdim, şema ile uyumlu olsun diye
         created=res.get('productVariantsBulkCreate',{}).get('productVariants',[])
         if errs:=res.get('productVariantsBulkCreate',{}).get('userErrors',[]): logging.error(f"Varyant ekleme hataları: {errs}")
         logging.info(f"{len(created)} yeni varyant eklendi")
@@ -611,37 +600,19 @@ class ProductSyncManager:
 
     def _adjust_inventory_bulk(self, inventory_adjustments):
         if not inventory_adjustments:
-            logging.info("Ayarlanacak stok bulunmuyor.")
             return
 
         location_id = self.shopify.get_default_location_id()
-        logging.info(f"GraphQL ile {len(inventory_adjustments)} adet stok ayarlanıyor. Lokasyon: {location_id}")
         
         mutation = """
         mutation inventorySetOnHandQuantities($input: InventorySetOnHandQuantitiesInput!) {
           inventorySetOnHandQuantities(input: $input) {
-            userErrors {
-              field
-              message
-              code
-            }
+            userErrors { field message code }
           }
         }
         """
         
-        variables = {
-            "input": {
-                "reason": "correction",
-                "setQuantities": [
-                    {
-                        "inventoryItemId": adj["inventoryItemId"],
-                        "quantity": adj["availableQuantity"],
-                        "locationId": location_id
-                    }
-                    for adj in inventory_adjustments
-                ]
-            }
-        }
+        variables = { "input": { "reason": "correction", "setQuantities": [ { "inventoryItemId": adj["inventoryItemId"], "quantity": adj["availableQuantity"], "locationId": location_id } for adj in inventory_adjustments ] } }
 
         try:
             response = self.shopify.execute_graphql(mutation, variables)
@@ -657,7 +628,6 @@ class ProductSyncManager:
         name = sentos_product.get('name', 'Bilinmeyen Ürün')
         sku = sentos_product.get('sku', 'SKU Yok')
         log_detail = {'name': name, 'sku': sku}
-        logging.info(f"--- Ürün işleniyor: '{name}' (SKU: {sku}) ---")
         try:
             if not name.strip():
                 logging.warning(f"İsimsiz ürün atlandı (SKU: {sku})"); self.stats['skipped'] += 1; return
@@ -681,20 +651,16 @@ def sync_products_from_sentos_api(
     sentos_api_key, 
     sentos_api_secret, 
     sentos_cookie,
-    enable_detailed_logs=True, # 'test_mode' ile aynı işlevi görebilir veya ayrı mantık eklenebilir
+    enable_detailed_logs=True,
     max_workers=10, 
     sync_mode="Full Sync"
-    # progress_callback parametresi kaldırıldı
 ):
     """Ana sync fonksiyonu"""
     
-    # Progress callback güvenli çağrı fonksiyonu
     def safe_progress_callback(data):
-        # Arka plan görevinin meta verisini güncelle
         try:
             job = get_current_job()
             if job:
-                # Gelen yeni veriyi mevcut meta verisiyle birleştir
                 job.meta.update(data)
                 job.save_meta()
         except Exception as e:
@@ -702,7 +668,6 @@ def sync_products_from_sentos_api(
     
     try:
         shopify_api = ShopifyAPI(shopify_store, shopify_token)
-        # 'sentos_user_id' yerine 'sentos_api_secret' kullanılıyor, daha anlaşılır.
         sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
 
         safe_progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 5})
@@ -725,8 +690,6 @@ def sync_products_from_sentos_api(
                 processed = sync_manager.stats['processed']; total = len(sentos_products)
                 progress = 55 + int((processed / total) * 45) if total > 0 else 100
                 safe_progress_callback({'progress': progress, 'message': f"İşlenen: {processed}/{total}", 'stats': sync_manager.stats.copy()})
-        
-        safe_progress_callback({'status': 'done', 'results': {'stats': sync_manager.stats, 'details': sync_manager.details}})
         
         return {'stats': sync_manager.stats, 'details': sync_manager.details}
         
