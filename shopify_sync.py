@@ -295,6 +295,23 @@ class SentosAPI:
         except Exception as e:
             return {'success': False, 'message': f'REST API failed: {e}'}
 
+    def get_product_by_sku(self, sku):
+        """Sentos'ta SKU'ya göre tek bir ürün getirir."""
+        if not sku:
+            raise ValueError("Aranacak SKU boş olamaz.")
+        endpoint = f"/products?sku={sku.strip()}"
+        try:
+            response = self._make_request("GET", endpoint).json()
+            products = response.get('data', [])
+            if not products:
+                logging.warning(f"Sentos API'de '{sku}' SKU'su ile ürün bulunamadı.")
+                return None
+            logging.info(f"Sentos API'de '{sku}' SKU'su ile ürün bulundu.")
+            return products[0]
+        except Exception as e:
+            logging.error(f"Sentos'ta SKU '{sku}' aranırken hata: {e}")
+            raise
+
 # --- Senkronizasyon Yöneticisi ---
 class ProductSyncManager:
     def __init__(self, shopify_api, sentos_api):
@@ -870,3 +887,107 @@ def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, s
         logging.info("Zamanlanmış senkronizasyon görevi başarıyla tamamlandı.")
     except Exception as e:
         logging.error(f"Zamanlanmış senkronizasyon görevinde kritik hata: {e}", exc_info=True)
+
+def sync_missing_products_only(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, progress_callback, stop_event, max_workers):
+    """
+    Sentos'ta olup Shopify'da olmayan ürünleri bulur ve sadece onları oluşturur.
+    Mevcut ürünlere dokunmaz.
+    """
+    start_time = time.monotonic()
+    try:
+        shopify_api = ShopifyAPI(store_url, access_token)
+        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
+        sync_manager = ProductSyncManager(shopify_api, sentos_api)
+
+        progress_callback({'message': "Mevcut Shopify ürünleri önbelleğe alınıyor...", 'progress': 10})
+        shopify_api.load_all_products(progress_callback=progress_callback)
+        
+        if stop_event.is_set(): raise Exception("İşlem başlangıçta durduruldu.")
+
+        page = 1
+        page_size = 20 if test_mode else 50
+        products_to_create = []
+
+        # 1. Aşama: Eksik ürünleri bulma
+        progress_callback({'message': "Sentos ürünleri taranıyor ve eksikler bulunuyor...", 'progress': 40})
+        while not stop_event.is_set():
+            response = sentos_api.get_products_by_page(page=page, page_size=page_size)
+            products_on_page = response.get('data', [])
+            if not products_on_page: break
+            
+            for p in products_on_page:
+                if not sync_manager.find_shopify_product(p):
+                    products_to_create.append(p)
+            
+            if test_mode: break
+            page += 1
+        
+        sync_manager.stats['total'] = len(products_to_create)
+        logging.info(f"Shopify'da eksik olan {len(products_to_create)} ürün bulundu ve oluşturulacak.")
+
+        # 2. Aşama: Bulunan eksik ürünleri oluşturma
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="CreateMissing") as executor:
+            futures = {executor.submit(sync_manager.create_new_product, p): p for p in products_to_create}
+            for future in as_completed(futures):
+                if stop_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    return
+                
+                sentos_product = futures[future]
+                try:
+                    changes = future.result()
+                    status_icon, status = "✅", "created"
+                    sync_manager.stats['created'] += 1
+                    html_log = f"<div><strong>{status_icon} Oluşturuldu:</strong> {sentos_product.get('name')}</div>"
+                    progress_callback({'log_detail': html_log})
+                except Exception as e:
+                    sync_manager.stats['failed'] += 1
+                    error_message = f"❌ Hata: {sentos_product.get('name')} oluşturulamadı - {e}"
+                    progress_callback({'log_detail': f"<div style='color: #f48a94;'>{error_message}</div>"})
+                
+                sync_manager.stats['processed'] += 1
+                processed = sync_manager.stats['processed']
+                total = sync_manager.stats['total']
+                progress = int((processed / total) * 100) if total > 0 else 0
+                progress_callback({'progress': progress, 'message': f"Oluşturulan: {processed}/{total}", 'stats': sync_manager.stats.copy()})
+
+        duration = time.monotonic() - start_time
+        results = {'stats': sync_manager.stats, 'details': sync_manager.details, 'duration': str(timedelta(seconds=duration))}
+        progress_callback({'status': 'done', 'results': results, 'progress': 100})
+
+    except Exception as e:
+        logging.critical(f"Eksik ürün senkronizasyonunda hata: {e}\n{traceback.format_exc()}")
+        progress_callback({'status': 'error', 'message': str(e)})
+
+
+# --- YENİ ÖZELLİK 2: SKU İLE TEKİL ÜRÜN GÜNCELLEME FONKSİYONU ---
+def sync_single_product_by_sku(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, sku):
+    """
+    Verilen SKU'yu Sentos'ta bulur ve Shopify'daki karşılığını tam olarak günceller.
+    """
+    try:
+        shopify_api = ShopifyAPI(store_url, access_token)
+        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
+        sync_manager = ProductSyncManager(shopify_api, sentos_api)
+
+        # 1. Sentos'tan ürünü bul
+        sentos_product = sentos_api.get_product_by_sku(sku)
+        if not sentos_product:
+            return {'success': False, 'message': f"'{sku}' SKU'su ile Sentos'ta ürün bulunamadı."}
+
+        # 2. Shopify'da karşılığını bulmak için önbelleği yükle
+        shopify_api.load_all_products()
+        
+        existing_product = sync_manager.find_shopify_product(sentos_product)
+        if not existing_product:
+            return {'success': False, 'message': f"'{sku}' SKU'su ile Shopify'da eşleşen ürün bulunamadı. Lütfen önce oluşturun."}
+
+        # 3. Ürünü tam güncelleme modunda senkronize et
+        changes_made = sync_manager.update_existing_product(sentos_product, existing_product, "Full Sync (Create & Update All)")
+
+        message = f"'{sentos_product.get('name')}' ürünü başarıyla güncellendi. Yapılan Değişiklikler: {', '.join(changes_made) or 'Değişiklik yok.'}"
+        return {'success': True, 'message': message}
+
+    except Exception as e:
+        logging.error(f"Tekil ürün {sku} senkronizasyonunda hata: {e}\n{traceback.format_exc()}")
+        return {'success': False, 'message': str(e)}        
