@@ -46,7 +46,7 @@ services:
     env: python
     buildCommand: "pip install -r requirements.txt"
     schedule: "0 */2 * * *"  # Her 2 saatte bir (120 dakika)
-    startCommand: "timeout 25m python cron_scheduler.py"  # 25 dakika timeout
+    startCommand: "timeout 15m python cron_scheduler.py"  # 15 dakika timeout (25'ten düşürüldü)
     envVars:
       - key: REDIS_URL
         fromService:
@@ -56,9 +56,9 @@ services:
       - key: APP_URL
         value: "https://app-and-worker.onrender.com"
       - key: SYNC_BATCH_SIZE
-        value: "10"
+        value: "5"  # 10'dan 5'e düşürüldü
       - key: SYNC_MAX_WORKERS
-        value: "3"
+        value: "2"  # 3'ten 2'ye düşürüldü
 
   # Servis 5: Keep-Alive Service - Ana Uygulama
   - type: cron

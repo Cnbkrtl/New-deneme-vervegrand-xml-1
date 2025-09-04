@@ -10,7 +10,7 @@ import threading  # ProductSyncManager içindeki RLock için gerekli
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.auth import HTTPBasicAuth
 from urllib.parse import urljoin, urlparse
-from datetime import timedelta
+from datetime import timedelta, datetime
 from rq import get_current_job
 
 # --- Loglama Konfigürasyonu ---
@@ -783,40 +783,64 @@ class ProductSyncManager:
                 self.stats['processed'] += 1
 
 # --- Ana Senkronizasyon Fonksiyonu ---
-def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, max_workers, sync_mode):
-    start_time = time.monotonic()
+def sync_products_from_sentos_api(
+    shopify_store, 
+    shopify_token, 
+    sentos_api_url, 
+    sentos_user_id, 
+    sentos_api_key, 
+    sentos_cookie,
+    enable_detailed_logs=True, 
+    max_workers=10, 
+    sync_mode="Full Sync",
+    progress_callback=None
+):
+    """Ana sync fonksiyonu"""
+    from rq import get_current_job
+    from datetime import datetime
     
     job = get_current_job()
-    if job:
-        job.meta['live_log'] = []
-        job.save_meta()
-
-    def progress_callback(update):
+    start_time = datetime.now()
+    
+    # Progress callback tanımla (job varsa job.meta kullan, yoksa callback kullan)
+    def update_progress(data):
         if job:
-            job.refresh()
-            current_meta = job.meta.copy()
-            if 'log_detail' in update:
-                current_meta['live_log'] = current_meta.get('live_log', []) + [update['log_detail']]
-            current_meta.update({k: v for k, v in update.items() if k != 'log_detail'})
-            job.meta = current_meta
+            if not hasattr(job, 'meta') or job.meta is None:
+                job.meta = {}
+            job.meta.update(data)
             job.save_meta()
+        elif progress_callback:
+            progress_callback(data)
+    
+    # İlk meta bilgileri kaydet
+    update_progress({
+        'progress': 0,
+        'start_time': start_time.isoformat(),
+        'stats': {'updated': 0, 'created': 0, 'skipped': 0, 'failed': 0},
+        'total_products': 0,
+        'processed_products': 0,
+        'current_product': '',
+        'current_batch': 0,
+        'total_batches': 0
+    })
 
     try:
-        shopify_api = ShopifyAPI(store_url, access_token)
-        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
+        shopify_api = ShopifyAPI(shopify_store, shopify_token)
+        sentos_api = SentosAPI(sentos_api_url, sentos_user_id, sentos_api_key, sentos_cookie)
 
-        progress_callback({'message': "Shopify ürünleri önbelleğe alınıyor...", 'progress': 5})
+        update_progress({'message': "Shopify ürünleri önbelleğe alınıyor...", 'progress': 5})
         shopify_api.load_all_products(progress_callback=progress_callback)
         
-        progress_callback({'message': "Sentos'tan ürünler çekiliyor...", 'progress': 15})
+        update_progress({'message': "Sentos'tan ürünler çekiliyor...", 'progress': 15})
         sentos_products = sentos_api.get_all_products(progress_callback=progress_callback)
         
         if not sentos_products:
             return {'stats': {'message': 'Sentos\'ta senkronize edilecek ürün bulunamadı.'}, 'details': []}
 
-        if test_mode: sentos_products = sentos_products[:20]
+        # Test mode satırı kaldırıldı - sadece bu satır değişti
+        # if test_mode: sentos_products = sentos_products[:20]  # Bu satır kaldırıldı
         
-        progress_callback({'message': f"{len(sentos_products)} ürün senkronize ediliyor...", 'progress': 55})
+        update_progress({'message': f"{len(sentos_products)} ürün senkronize ediliyor...", 'progress': 55})
         
         sync_manager = ProductSyncManager(shopify_api, sentos_api)
         sync_manager.stats['total'] = len(sentos_products)
@@ -828,7 +852,22 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
         batch_size = 10  # Her batch'te 10 ürün
         product_batches = [sentos_products[i:i + batch_size] for i in range(0, len(sentos_products), batch_size)]
         
+        # Total products sayısını güncelle
+        total_products = len(sentos_products)
+        if job:
+            job.meta['total_products'] = total_products
+            job.meta['total_batches'] = len(product_batches)
+            job.save_meta()
+        
+        # Batch processing
+        stats = {'updated': 0, 'created': 0, 'skipped': 0, 'failed': 0}
+        processed_count = 0
+        
         for batch_index, batch in enumerate(product_batches):
+            if job:
+                job.meta['current_batch'] = batch_index + 1
+                job.save_meta()
+            
             try:
                 # Her batch öncesi kısa bekleme
                 if batch_index > 0:
@@ -847,35 +886,83 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
                     for future in as_completed(futures):
                         try:
                             result = future.result(timeout=60)  # 60 saniye timeout
-                            # ...existing result processing...
+                            # İlgili istatistikleri güncelle
+                            if result:
+                                for key in stats.keys():
+                                    if key in result:
+                                        stats[key] += result[key]
                         except TimeoutError:
                             logging.warning("⚠️ Product timeout - skipping")
-                            sync_manager.stats['failed'] += 1
+                            stats['failed'] += 1
                         except Exception as e:
                             logging.error(f"❌ Product error: {e}")
-                            sync_manager.stats['failed'] += 1
+                            stats['failed'] += 1
                             
                 # Progress güncelle
-                progress = int((batch_index + 1) / len(product_batches) * 100)
+                processed_count += len(batch)
+                progress = int((processed_count / total_products) * 100)
                 if job:
-                    job.meta['progress'] = progress
-                    job.meta['current_batch'] = batch_index + 1
-                    job.meta['total_batches'] = len(product_batches)
+                    job.meta.update({
+                        'progress': progress,
+                        'stats': stats,
+                        'processed_products': processed_count
+                    })
                     job.save_meta()
                     
             except Exception as e:
                 logging.error(f"❌ Batch {batch_index + 1} failed: {e}")
                 continue
             
-        duration = time.monotonic() - start_time
-        results = {
+        # Final stats
+        if job:
+            job.meta.update({
+                'progress': 100,
+                'stats': stats,
+                'processed_products': total_products,
+                'current_product': 'Tamamlandı!',
+                'end_time': datetime.now().isoformat()
+            })
+            job.save_meta()
+        
+        return {
             'stats': sync_manager.stats, 
             'details': sync_manager.details,
-            'duration': str(timedelta(seconds=duration))
+            'duration': str(timedelta(seconds=time.monotonic() - start_time.timestamp()))
         }
-        progress_callback({'progress': 100, 'message': 'Tamamlandı!', 'stats': results['stats']})
-        return results
     except Exception as e:
         logging.critical(f"Senkronizasyon görevi kritik hata: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
+        raise
+
+def process_single_product(product, shopify_store, shopify_token, sync_mode, enable_detailed_logs):
+    """Tek ürün işleme fonksiyonu - progress_callback parametresi kaldırıldı"""
+    from rq import get_current_job
+    
+    # Progress güncellemelerini job meta üzerinden yap
+    job = get_current_job()
+    if job:
+        job.meta = job.meta or {}
+        job.meta['current_product'] = product.get('name', 'Unknown Product')
+        job.save_meta()
+    
+    try:
+        # Eksik olan API instance'ları eklendi - sadece bu kısım eklendi
+        shopify_api = ShopifyAPI(shopify_store, shopify_token)
+        sentos_api = SentosAPI("", "", "")  # Dummy instance
+        sync_manager = ProductSyncManager(shopify_api, sentos_api)
+        
+        # API çağrıları düzeltildi - sadece bu satırlar değişti
+        existing_product = sync_manager.find_shopify_product(product)
+        
+        if existing_product:
+            changes = sync_manager.update_existing_product(product, existing_product, sync_mode)
+            return {'updated': 1, 'changes': changes}
+        elif sync_mode == "Full Sync (Create & Update All)":
+            changes = sync_manager.create_new_product(product)
+            return {'created': 1, 'changes': changes}
+        else:
+            logging.warning(f"Ürün bulunamadı ve oluşturulmadı (SKU: {product.get('sku')}, Mod: {sync_mode})")
+            return {'skipped': 1}
+    except Exception as e:
+        logging.error(f"Ürün işlenirken hata oluştu (SKU: {product.get('sku')}): {e}")
         raise

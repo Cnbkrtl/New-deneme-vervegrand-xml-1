@@ -7,7 +7,9 @@ from yaml.loader import SafeLoader
 import queue
 import os
 import redis
+import json
 from rq import Queue
+from datetime import datetime
 
 from config_manager import load_all_keys
 from shopify_sync import ShopifyAPI, SentosAPI
@@ -120,14 +122,6 @@ if st.session_state["authentication_status"]:
 
     import streamlit as st
 
-    # Session state initialization
-    if 'sync_status' not in st.session_state:
-        st.session_state.sync_status = None
-    if 'sync_job_id' not in st.session_state:
-        st.session_state.sync_job_id = None
-    if 'sync_progress' not in st.session_state:
-        st.session_state.sync_progress = 0
-
     # Redis connection setup
     @st.cache_resource
     def get_redis_connection():
@@ -152,6 +146,65 @@ if st.session_state["authentication_status"]:
         st.session_state.sync_job_id = job.id  # job.id kullan
         st.session_state.sync_progress = 0
 
+    def save_sync_state_to_redis(state_data):
+        """Sync durumunu Redis'e kaydet (cross-device için)"""
+        try:
+            r = get_redis_connection()
+            r.setex('global_sync_state', 3600, json.dumps(state_data))  # 1 saat expire
+        except Exception as e:
+            st.error(f"Sync durumu kaydedilemedi: {e}")
+
+    def load_sync_state_from_redis():
+        """Redis'ten sync durumunu yükle"""
+        try:
+            r = get_redis_connection()
+            state_json = r.get('global_sync_state')
+            if state_json:
+                return json.loads(state_json)
+        except Exception as e:
+            st.warning(f"Sync durumu yüklenemedi: {e}")
+        return None
+
+    # Session state initialization with Redis sync
+    def initialize_session_state():
+        # Önce Redis'ten global durumu kontrol et
+        global_state = load_sync_state_from_redis()
+        
+        if global_state and global_state.get('sync_status') == 'running':
+            # Global aktif sync varsa session state'i güncelle
+            st.session_state.sync_status = global_state['sync_status']
+            st.session_state.sync_job_id = global_state.get('sync_job_id')
+            st.session_state.sync_start_time = global_state.get('sync_start_time')
+        else:
+            # Local session state'i kontrol et
+            if 'sync_status' not in st.session_state:
+                st.session_state.sync_status = None
+            if 'sync_job_id' not in st.session_state:
+                st.session_state.sync_job_id = None
+            if 'sync_start_time' not in st.session_state:
+                st.session_state.sync_start_time = None
+
+    # Ana sayfa başında bu fonksiyonu çağır
+    initialize_session_state()
+
+    # Sync başlatma fonksiyonu güncellemesi
+    def start_sync_with_redis_state(job_id):
+        """Sync başlatır ve durumu Redis'e kaydeder"""
+        state_data = {
+            'sync_status': 'running',
+            'sync_job_id': job_id,
+            'sync_start_time': datetime.now().isoformat(),
+            'last_update': datetime.now().isoformat()
+        }
+        
+        # Session state güncelle
+        st.session_state.sync_status = state_data['sync_status']
+        st.session_state.sync_job_id = state_data['sync_job_id']
+        st.session_state.sync_start_time = state_data['sync_start_time']
+        
+        # Redis'e kaydet
+        save_sync_state_to_redis(state_data)
+
     # Progress tracking function
     def check_sync_progress():
         if st.session_state.sync_job_id:
@@ -168,9 +221,42 @@ if st.session_state["authentication_status"]:
                     # Progress güncelle
                     st.session_state.sync_progress = job.meta.get('progress', 0)
 
+    # Progress tracking with Redis
+    def update_sync_progress_in_redis():
+        """Sync progress'ini Redis'e güncelle"""
+        if st.session_state.get('sync_job_id'):
+            try:
+                q = get_queue()
+                job = q.fetch_job(st.session_state.sync_job_id)
+                if job:
+                    status = job.get_status()
+                    
+                    # Status değişti mi kontrol et
+                    if status != 'started':
+                        state_data = {
+                            'sync_status': 'completed' if status == 'finished' else 'failed',
+                            'sync_job_id': None,
+                            'sync_start_time': None,
+                            'last_update': datetime.now().isoformat()
+                        }
+                        
+                        # Session state temizle
+                        st.session_state.sync_status = None
+                        st.session_state.sync_job_id = None
+                        
+                        # Redis'i güncelle
+                        save_sync_state_to_redis(state_data)
+                        
+            except Exception as e:
+                st.error(f"Progress güncellenirken hata: {e}")
+
     # Her sayfada sync durumunu kontrol et
     if st.session_state.sync_status == "running":
         check_sync_progress()
+
+    # Her sayfa yüklendiğinde progress'i kontrol et
+    if st.session_state.get('sync_status') == 'running':
+        update_sync_progress_in_redis()
 
     # Sync durumunu sidebar'da göster
     if st.session_state.sync_status == "running":

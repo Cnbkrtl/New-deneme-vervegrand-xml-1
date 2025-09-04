@@ -34,11 +34,11 @@ def trigger_auto_sync():
             logger.error("Auto sync credentials not configured in environment variables")
             return
             
-        # Optimized parameters
-        batch_size = int(os.getenv('SYNC_BATCH_SIZE', '10'))
-        max_workers = int(os.getenv('SYNC_MAX_WORKERS', '3'))
+        # Optimized parameters - daha küçük değerler
+        batch_size = int(os.getenv('SYNC_BATCH_SIZE', '5'))
+        max_workers = int(os.getenv('SYNC_MAX_WORKERS', '2'))
         
-        # Job oluştur - kısa timeout ile
+        # Job oluştur - daha kısa timeout ile
         job = q.enqueue(
             shopify_sync.sync_products_from_sentos_api,
             shopify_store,
@@ -50,10 +50,21 @@ def trigger_auto_sync():
             True,  # enable_detailed_logs
             max_workers,    # optimize edilmiş worker sayısı
             "Stock & Variants Only",  # sync_mode
-            job_timeout='20m'  # 20 dakika timeout
+            job_timeout='12m'  # 20'den 12 dakikaya düşürüldü
         )
         
-        logger.info(f"Auto sync job queued: {job.id} (timeout: 20m, workers: {max_workers})")
+        # Global state'i Redis'e kaydet
+        import json
+        state_data = {
+            'sync_status': 'running',
+            'sync_job_id': job.id,
+            'sync_start_time': datetime.now().isoformat(),
+            'sync_type': 'auto_cron',
+            'last_update': datetime.now().isoformat()
+        }
+        r.setex('global_sync_state', 3600, json.dumps(state_data))
+        
+        logger.info(f"Auto sync job queued: {job.id} (timeout: 12m, workers: {max_workers}, batch: {batch_size})")
         
         # Keep-alive ping
         app_url = os.getenv('APP_URL')
