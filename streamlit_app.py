@@ -6,6 +6,8 @@ import streamlit_authenticator as stauth
 from yaml.loader import SafeLoader
 import queue
 import os
+import redis
+from rq import Queue
 
 from config_manager import load_all_keys
 from shopify_sync import ShopifyAPI, SentosAPI
@@ -126,16 +128,34 @@ if st.session_state["authentication_status"]:
     if 'sync_progress' not in st.session_state:
         st.session_state.sync_progress = 0
 
+    # Redis connection setup
+    @st.cache_resource
+    def get_redis_connection():
+        redis_url = os.getenv('REDIS_URL', 'redis://localhost:6379')
+        return redis.from_url(redis_url)
+
+    @st.cache_resource
+    def get_queue():
+        r = get_redis_connection()
+        return Queue('default', connection=r)
+
     # Sync başlatırken
     def start_sync():
-        # ...existing sync code...
+        q = get_queue()
+        
+        # Job oluştur ve ID'yi al
+        job = q.enqueue(
+            # sync fonksiyonu ve parametreleri
+        )
+        
         st.session_state.sync_status = "running"
-        st.session_state.sync_job_id = job_id  # Redis queue job ID
+        st.session_state.sync_job_id = job.id  # job.id kullan
         st.session_state.sync_progress = 0
 
     # Progress tracking function
     def check_sync_progress():
         if st.session_state.sync_job_id:
+            q = get_queue()  # Queue'yu burada tanımla
             # Redis job durumunu kontrol et
             job = q.fetch_job(st.session_state.sync_job_id)
             if job:

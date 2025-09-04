@@ -36,3 +36,27 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "streamlit run streamlit_app.py --server.port $PORT --server.address 0.0.0.0 --server.enableCORS=false"
     healthCheckPath: /_stcore/health
+
+  # Servis 4: Cron Job - Otomatik Sync
+  - type: cron
+    name: auto-sync-scheduler
+    env: python
+    buildCommand: "pip install -r requirements.txt"
+    schedule: "0 */2 * * *"  # Her 2 saatte bir (120 dakika)
+    startCommand: "python cron_scheduler.py"
+    envVars:
+      - key: REDIS_URL
+        fromService:
+          type: redis
+          name: redis-db
+          property: connectionString
+      - key: APP_URL
+        value: "https://app-and-worker.onrender.com"
+
+  # Servis 5: Keep-Alive Service
+  - type: cron
+    name: keep-alive
+    env: python
+    buildCommand: "pip install requests"
+    schedule: "*/10 * * * *"  # Her 10 dakikada bir
+    startCommand: "python -c 'import requests; requests.get(\"https://app-and-worker.onrender.com/_stcore/health\")'"
