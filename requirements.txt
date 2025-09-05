@@ -5,3 +5,9 @@ cryptography
 streamlit-authenticator
 PyYAML
 bcrypt
+openpyxl
+XlsxWriter
+gspread
+gspread-dataframe
+oauth2client
+google-auth

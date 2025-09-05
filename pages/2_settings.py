@@ -1,6 +1,7 @@
 import streamlit as st
 import config_manager
 from shopify_sync import ShopifyAPI, SentosAPI
+import json
 
 # Giriş kontrolü
 if not st.session_state.get("authentication_status"):
@@ -43,86 +44,73 @@ def test_sentos_connection(url, key, secret, cookie):
 
 # --- AYAR FORMU ---
 with st.form("settings_form"):
+    st.subheader("🔗 API Ayarları")
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("🏪 Shopify Ayarları")
-        shopify_store = st.text_input(
-            "Mağaza URL",
-            value=st.session_state.get('shopify_store', ''),
-            placeholder="your-store.myshopify.com"
-        )
-        shopify_token = st.text_input(
-            "Erişim Token'ı",
-            value=st.session_state.get('shopify_token', ''),
-            type="password"
-        )
+        st.markdown("<h5>🏪 Shopify Ayarları</h5>", unsafe_allow_html=True)
+        shopify_store = st.text_input("Mağaza URL", value=st.session_state.get('shopify_store', ''), placeholder="your-store.myshopify.com")
+        shopify_token = st.text_input("Erişim Token'ı", value=st.session_state.get('shopify_token', ''), type="password")
     
     with col2:
-        st.subheader("Sentos API Ayarları")
-        sentos_api_url = st.text_input(
-            "Sentos API URL",
-            value=st.session_state.get('sentos_api_url', ''),
-            placeholder="https://stildiva.sentos.com.tr/api"
-        )
-        sentos_api_key = st.text_input(
-            "Sentos API Key",
-            value=st.session_state.get('sentos_api_key', '')
-        )
-        sentos_api_secret = st.text_input(
-            "Sentos API Secret",
-            value=st.session_state.get('sentos_api_secret', ''),
-            type="password"
-        )
-        sentos_cookie = st.text_input(
-            "Sentos API Cookie",
-            value=st.session_state.get('sentos_cookie', ''),
-            type="password",
-            help="Resim sırasını doğru çekmek için Sentos panelinden alınan Cookie değeri."
-        )
+        st.markdown("<h5><img src='https://api.sentos.com.tr/img/favicon.png' width=20> Sentos API Ayarları</h5>", unsafe_allow_html=True)
+        sentos_api_url = st.text_input("Sentos API URL", value=st.session_state.get('sentos_api_url', ''), placeholder="https://stildiva.sentos.com.tr/api")
+        sentos_api_key = st.text_input("Sentos API Key", value=st.session_state.get('sentos_api_key', ''))
+        sentos_api_secret = st.text_input("Sentos API Secret", value=st.session_state.get('sentos_api_secret', ''), type="password")
+        sentos_cookie = st.text_input("Sentos API Cookie", value=st.session_state.get('sentos_cookie', ''), type="password", help="Resim sırasını doğru çekmek için Sentos panelinden alınan Cookie değeri.")
 
+    st.markdown("---")
+    st.subheader("📊 Google E-Tablolar Entegrasyonu")
+    gcp_service_account_json_str = st.text_area(
+        "Google Service Account JSON Anahtarı",
+        value=st.session_state.get('gcp_service_account_json', ''),
+        placeholder="İndirdiğiniz JSON dosyasının içeriğini buraya yapıştırın...",
+        height=250,
+        help="Google E-Tablolar'a veri yazabilmek için gereken servis hesabı anahtarı."
+    )
+    
     st.markdown("---")
     submitted = st.form_submit_button("💾 Kaydet ve Bağlantıları Test Et", use_container_width=True, type="primary")
 
     if submitted:
-        # **FIX:** Calling the correct function `save_user_keys` with the `username` parameter.
-        current_username = st.session_state.get("username")
-        if not current_username:
-            st.error("Kullanıcı adı bulunamadı. Lütfen tekrar giriş yapın.")
-        elif config_manager.save_user_keys(
-            current_username, # Added the required username parameter
-            shopify_store=shopify_store,
-            shopify_token=shopify_token,
-            sentos_api_url=sentos_api_url,
-            sentos_api_key=sentos_api_key,
-            sentos_api_secret=sentos_api_secret,
-            sentos_cookie=sentos_cookie
-        ):
-            st.success("✅ Ayarlarınız kaydedildi ve şifrelendi!")
-            
-            # Update session state with new values
-            st.session_state.shopify_store = shopify_store
-            st.session_state.shopify_token = shopify_token
-            st.session_state.sentos_api_url = sentos_api_url
-            st.session_state.sentos_api_key = sentos_api_key
-            st.session_state.sentos_api_secret = sentos_api_secret
-            st.session_state.sentos_cookie = sentos_cookie
-            
-            # Automatically re-test connections
-            st.info("Yeni ayarlarla bağlantılar yeniden test ediliyor...")
-            
-            with st.spinner("Shopify bağlantısı test ediliyor..."):
+        # JSON'ı doğrula
+        is_json_valid = True
+        if gcp_service_account_json_str:
+            try:
+                json.loads(gcp_service_account_json_str)
+            except json.JSONDecodeError:
+                st.error("Girdiğiniz Google Service Account anahtarı geçerli bir JSON formatında değil. Lütfen kontrol edin.")
+                is_json_valid = False
+        
+        if is_json_valid:
+            current_username = st.session_state.get("username")
+            if not current_username:
+                st.error("Kullanıcı adı bulunamadı. Lütfen tekrar giriş yapın.")
+            elif config_manager.save_user_keys(
+                username=current_username,
+                shopify_store=shopify_store,
+                shopify_token=shopify_token,
+                sentos_api_url=sentos_api_url,
+                sentos_api_key=sentos_api_key,
+                sentos_api_secret=sentos_api_secret,
+                sentos_cookie=sentos_cookie,
+                gcp_service_account_json=gcp_service_account_json_str
+            ):
+                st.success("✅ Ayarlarınız kaydedildi ve şifrelendi!")
+                
+                # Session state'i güncelle
+                st.session_state.update({
+                    'shopify_store': shopify_store, 'shopify_token': shopify_token,
+                    'sentos_api_url': sentos_api_url, 'sentos_api_key': sentos_api_key,
+                    'sentos_api_secret': sentos_api_secret, 'sentos_cookie': sentos_cookie,
+                    'gcp_service_account_json': gcp_service_account_json_str
+                })
+                
+                # Bağlantıları yeniden test et
+                st.info("Yeni ayarlarla bağlantılar yeniden test ediliyor...")
                 if shopify_store and shopify_token:
                     test_shopify_connection(shopify_store, shopify_token)
-                else:
-                    st.warning("Shopify ayarları eksik.")
-                    st.session_state.shopify_status = 'pending'
-
-            with st.spinner("Sentos bağlantısı test ediliyor..."):
                 if sentos_api_url and sentos_api_key and sentos_api_secret:
                     test_sentos_connection(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
-                else:
-                    st.warning("Sentos ayarları eksik.")
-                    st.session_state.sentos_status = 'pending'
-        else:
-            st.error("❌ Ayarlar kaydedilemedi.")
+            else:
+                st.error("❌ Ayarlar kaydedilemedi.")

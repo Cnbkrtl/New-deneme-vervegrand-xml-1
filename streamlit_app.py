@@ -52,6 +52,8 @@ def load_and_verify_user_data(username):
     st.session_state.sentos_api_key = user_creds.get('sentos_api_key')
     st.session_state.sentos_api_secret = user_creds.get('sentos_api_secret')
     st.session_state.sentos_cookie = user_creds.get('sentos_cookie')
+    # --- EKSİK SATIR BURAYA EKLENDİ ---
+    st.session_state.gcp_service_account_json = user_creds.get('gcp_service_account_json')
 
     # Bağlantıları test et
     if st.session_state.shopify_store and st.session_state.shopify_token:
@@ -63,7 +65,7 @@ def load_and_verify_user_data(username):
 
     if st.session_state.sentos_api_url and st.session_state.sentos_api_key and st.session_state.sentos_api_secret:
         try:
-            api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret)
+            api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
             st.session_state.sentos_data = api.test_connection()
             st.session_state.sentos_status = 'connected' if st.session_state.sentos_data.get('success') else 'failed'
         except: st.session_state.sentos_status = 'failed'

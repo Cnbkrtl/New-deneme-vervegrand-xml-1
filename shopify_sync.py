@@ -49,12 +49,12 @@ class ShopifyAPI:
     def _make_request(self, method, endpoint, data=None, is_graphql=False):
         url = self.graphql_url if is_graphql else f"{self.rest_base_url}/{endpoint}"
         try:
-            time.sleep(0.51)
+            time.sleep(0.51) # Her istek arasına genel bir bekleme süresi koyuyoruz
             response = requests.request(method, url, headers=self.headers, json=data, timeout=90)
             
-            if response.status_code == 429:
+            if response.status_code == 429: # HTTP 429 rate limit hatası
                 retry_after = int(response.headers.get('Retry-After', 10))
-                logging.warning(f"Shopify API rate limit'e takıldı. {retry_after} saniye bekleniyor...")
+                logging.warning(f"Shopify API rate limit'e takıldı (HTTP 429). {retry_after} saniye bekleniyor...")
                 time.sleep(retry_after)
                 return self._make_request(method, endpoint, data, is_graphql)
             
@@ -66,13 +66,33 @@ class ShopifyAPI:
 
     def execute_graphql(self, query, variables=None):
         payload = {'query': query, 'variables': variables or {}}
-        response_data = self._make_request('POST', '', data=payload, is_graphql=True)
         
-        if "errors" in response_data:
-            error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in response_data["errors"]]
-            logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(response_data['errors'], indent=2)}")
-            raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
-        return response_data.get("data", {})
+        # API yavaşlatma (Throttling) için akıllı yeniden deneme mantığı
+        max_retries = 5
+        for attempt in range(max_retries):
+            response_data = self._make_request('POST', '', data=payload, is_graphql=True)
+            
+            if "errors" in response_data:
+                errors = response_data["errors"]
+                # Sadece "THROTTLED" hatası varsa bekle ve yeniden dene
+                is_throttled = any(err.get('extensions', {}).get('code') == 'THROTTLED' for err in errors)
+
+                if is_throttled and attempt < max_retries - 1:
+                    wait_time = 2 * (attempt + 1)  # 2, 4, 6, 8 saniye gibi artan bekleme
+                    logging.warning(f"GraphQL API rate limit'e takıldı (THROTTLED). {wait_time} saniye sonra yeniden denenecek... (Deneme {attempt + 1}/{max_retries})")
+                    time.sleep(wait_time)
+                    continue  # Döngünün başına dön ve tekrar dene
+                
+                # Başka bir hata varsa veya son deneme ise hatayı göster ve işlemi durdur
+                error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in errors]
+                logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(errors, indent=2)}")
+                raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
+
+            # Hata yoksa veriyi döndür ve döngüden çık
+            return response_data.get("data", {})
+        
+        # Bu satıra sadece tüm denemeler başarısız olursa ulaşılır
+        raise Exception("GraphQL isteği, API limitleri nedeniyle birden fazla denemeden sonra başarısız oldu.")
     
     def _get_product_media_details(self, product_gid):
         try:
@@ -209,7 +229,119 @@ class ShopifyAPI:
             'plan': shop_data.get('plan', {}).get('displayName', 'N/A')
         }
 
+    # --- EXCEL RAPORU İÇİN YENİ FONKSİYONLAR ---
+    def get_all_collections(self, progress_callback=None):
+        """Mağazadaki tüm koleksiyonları ID ve başlıklarıyla birlikte çeker."""
+        all_collections = []
+        query = """
+        query getCollections($cursor: String) {
+          collections(first: 100, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            edges {
+              node {
+                id
+                title
+              }
+            }
+          }
+        }
+        """
+        variables = {"cursor": None}
+        
+        while True:
+            if progress_callback:
+                progress_callback(f"Shopify'dan koleksiyonlar çekiliyor... {len(all_collections)} koleksiyon bulundu.")
+            
+            data = self.execute_graphql(query, variables)
+            collections_data = data.get("collections", {})
+            
+            for edge in collections_data.get("edges", []):
+                all_collections.append(edge["node"])
+            
+            if not collections_data.get("pageInfo", {}).get("hasNextPage"):
+                break
+                
+            variables["cursor"] = collections_data["pageInfo"]["endCursor"]
+        
+        logging.info(f"{len(all_collections)} adet koleksiyon bulundu.")
+        return all_collections
+
+    def get_all_products_for_export(self, progress_callback=None):
+        """Tüm ürünleri, varyantları ve koleksiyon bilgilerini Excel export için çeker."""
+        all_products = []
+        query = """
+        query getProductsForExport($cursor: String) {
+          products(first: 50, after: $cursor) {
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+            edges {
+              node {
+                title
+                handle
+                collections(first: 20) {
+                  edges {
+                    node {
+                      id
+                      title
+                    }
+                  }
+                }
+                featuredImage {
+                  url
+                }
+                variants(first: 100) {
+                  edges {
+                    node {
+                      sku
+                      displayName
+                      inventoryQuantity
+                      selectedOptions {
+                        name
+                        value
+                      }
+                      inventoryItem {
+                        unitCost {
+                          amount
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        
+        variables = {"cursor": None}
+        total_fetched = 0
+        while True:
+            if progress_callback:
+                progress_callback(f"Shopify'dan ürün verisi çekiliyor... {total_fetched} ürün alındı.")
+
+            data = self.execute_graphql(query, variables)
+            products_data = data.get("products", {})
+            
+            for edge in products_data.get("edges", []):
+                all_products.append(edge["node"])
+            
+            total_fetched = len(all_products)
+
+            if not products_data.get("pageInfo", {}).get("hasNextPage"):
+                break
+            
+            variables["cursor"] = products_data["pageInfo"]["endCursor"]
+        
+        logging.info(f"Export için toplam {len(all_products)} ürün çekildi.")
+        return all_products
+
 # --- Sentos API Sınıfı ---
+# ... (Bu kısımda değişiklik yok, olduğu gibi kalabilir)
 class SentosAPI:
     def __init__(self, api_url, api_key, api_secret, api_cookie=None):
         self.api_url = api_url.strip().rstrip('/')
@@ -338,6 +470,7 @@ class SentosAPI:
 
 
 # --- Senkronizasyon Yöneticisi ---
+# ... (Bu sınıfta değişiklik yapılmadı, olduğu gibi kalabilir)
 class ProductSyncManager:
     def __init__(self, shopify_api, sentos_api):
         self.shopify = shopify_api
@@ -780,3 +913,25 @@ def sync_missing_products_only(store_url, access_token, sentos_api_url, sentos_a
     except Exception as e:
         logging.critical(f"Eksik ürün senkronizasyonunda kritik hata: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
+
+# Cron job'lar için olan fonksiyonu, yeni callback yapısına uyumsuz olduğu
+# ve mevcut arayüzde kullanılmadığı için sadeleştiriyoruz.
+def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, sync_mode, max_workers):
+    logging.info(f"Cron job başlatıldı. Mod: {sync_mode}")
+    # Callback fonksiyonu loglama yapar
+    def cron_progress_callback(update):
+        if 'message' in update:
+            logging.info(update['message'])
+        if 'log_detail' in update:
+            # HTML tag'lerini temizleyerek log'a yaz
+            clean_log = re.sub('<[^<]+?>', '', update['log_detail'])
+            logging.info(clean_log)
+
+    # Durdurma olayı cron'da kullanılmaz
+    stop_event = threading.Event()
+    
+    sync_products_from_sentos_api(
+        store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret,
+        sentos_cookie, test_mode=False, progress_callback=cron_progress_callback,
+        stop_event=stop_event, max_workers=max_workers, sync_mode=sync_mode
+    )
