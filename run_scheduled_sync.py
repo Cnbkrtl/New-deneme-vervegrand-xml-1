@@ -69,7 +69,7 @@ def main():
             progress_callback=cron_progress_callback,
             stop_event=stop_event,
             sync_mode=sync_mode_to_run,
-            max_workers=4
+            max_workers=10
         )
         
         logging.info(f"Zamanlanmış senkronizasyon (Mod: {sync_mode_to_run}) başarıyla tamamlandı.")
