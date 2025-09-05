@@ -538,26 +538,60 @@ class ProductSyncManager:
         return changes
     
     def _sync_variants_and_stock(self, product_gid, sentos_product):
+        """Varyantları ve stokları karşılaştırır, detaylı rapor oluşturur ve günceller."""
         changes = []
+        adjustments_to_make = []
+        
         logging.info("Varyantlar ve stoklar senkronize ediliyor...")
-        ex_vars = self._get_product_variants(product_gid)
-        ex_skus = {str(v.get('inventoryItem',{}).get('sku','')).strip() for v in ex_vars if v.get('inventoryItem',{}).get('sku')}
         
-        s_vars = sentos_product.get('variants', []) or [sentos_product]
-        new_vars = [v for v in s_vars if str(v.get('sku','')).strip() not in ex_skus]
+        # 1. Adım: Shopify'daki mevcut varyantları ve stoklarını al
+        shopify_variants_map = self._get_product_variants(product_gid)
         
-        if new_vars:
-            msg = f"{len(new_vars)} yeni varyant eklendi."
+        # 2. Adım: Sentos'tan gelen varyantları işle
+        sentos_variants = sentos_product.get('variants', []) or [sentos_product]
+        
+        # Yeni eklenecek varyantları bul
+        new_vars_to_add = [v for v in sentos_variants if str(v.get('sku', '')).strip() not in shopify_variants_map]
+        
+        if new_vars_to_add:
+            msg = f"{len(new_vars_to_add)} yeni varyant eklendi."
             logging.info(msg)
             changes.append(msg)
-            self._add_variants_to_product(product_gid, new_vars, sentos_product)
-            time.sleep(3)
-        
-        all_now_variants = self._get_product_variants(product_gid)
-        if adjustments := self._prepare_inventory_adjustments(s_vars, all_now_variants):
-            msg = f"{len(adjustments)} varyantın stok seviyesi güncellendi."
-            changes.append(msg)
-            self._adjust_inventory_bulk(adjustments)
+            self._add_variants_to_product(product_gid, new_vars_to_add, sentos_product)
+            time.sleep(5) # Yeni varyantların işlenmesi için bekle
+            # Yeni varyantlar eklendiği için Shopify'daki listeyi yeniden çek
+            shopify_variants_map = self._get_product_variants(product_gid)
+
+        # Mevcut varyantların stoklarını karşılaştır
+        for s_variant in sentos_variants:
+            sku = str(s_variant.get('sku', '')).strip()
+            if not sku or sku not in shopify_variants_map:
+                continue
+
+            # Sentos'taki yeni stok miktarını al
+            new_quantity = 0
+            if stocks := s_variant.get('stocks', []):
+                if stocks and stocks[0] and stocks[0].get('stock') is not None:
+                    new_quantity = int(stocks[0].get('stock', 0))
+
+            # Shopify'daki eski stok miktarını al
+            shopify_variant_info = shopify_variants_map[sku]
+            old_quantity = shopify_variant_info.get('quantity', 0)
+            
+            # Sadece stoklar farklıysa işlem yap ve raporla
+            if new_quantity != old_quantity:
+                report_msg = f"• SKU: {sku} stoğu değiştirildi ({old_quantity} → {new_quantity})"
+                changes.append(report_msg)
+                logging.info(report_msg)
+                
+                adjustments_to_make.append({
+                    "inventoryItemId": shopify_variant_info['inventoryItemId'],
+                    "availableQuantity": new_quantity
+                })
+
+        # 3. Adım: Eğer yapılacak stok ayarı varsa, toplu olarak güncelle
+        if adjustments_to_make:
+            self._adjust_inventory_bulk(adjustments_to_make)
             
         logging.info("✅ Varyant ve stok senkronizasyonu tamamlandı.")
         return changes
@@ -591,9 +625,18 @@ class ProductSyncManager:
             
             msg = f"{len(created_vars)} varyantla oluşturuldu."
             changes.append(msg)
-            logging.info(f"Aşama 2 tamamlandı. {msg}")
             
-            if adjustments := self._prepare_inventory_adjustments(sentos_variants, created_vars):
+            # Yeni oluşturulan ürünün stoklarını ayarla
+            adjustments = []
+            for s_var, c_var in zip(sentos_variants, created_vars):
+                if c_var.get('inventoryItem'):
+                    qty = 0
+                    if s := s_var.get('stocks', []):
+                        if s and s[0] and s[0].get('stock') is not None:
+                            qty = s[0].get('stock', 0)
+                    adjustments.append({"inventoryItemId": c_var['inventoryItem']['id'], "availableQuantity": int(qty)})
+            
+            if adjustments:
                 changes.append(f"{len(adjustments)} varyantın stoğu ayarlandı.")
                 self._adjust_inventory_bulk(adjustments)
 
@@ -612,20 +655,20 @@ class ProductSyncManager:
         
         all_changes = []
         try:
-            if sync_mode in ["Full Sync (Create & Update All)", "Descriptions Only"]:
+            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Açıklamalar"]:
                  all_changes.extend(self._sync_core_details(shopify_gid, sentos_product))
 
-            if sync_mode in ["Full Sync (Create & Update All)", "Categories (Product Type) Only"]:
+            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Kategoriler (Ürün Tipi)"]:
                 all_changes.extend(self._sync_product_type(shopify_gid, sentos_product))
             
-            if sync_mode in ["Full Sync (Create & Update All)", "Stock & Variants Only"]:
+            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Stok ve Varyantlar"]:
                 all_changes.extend(self._sync_variants_and_stock(shopify_gid, sentos_product))
                 self._sync_product_options(shopify_gid, sentos_product)
 
-            if sync_mode == "Images Only":
+            if sync_mode == "Sadece Resimler":
                 all_changes.extend(self._sync_product_media(shopify_gid, sentos_product, set_alt_text=False))
             
-            if sync_mode in ["Images with SEO Alt Text", "Full Sync (Create & Update All)"]:
+            if sync_mode in ["SEO Alt Metinli Resimler", "Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)"]:
                  all_changes.extend(self._sync_product_media(shopify_gid, sentos_product, set_alt_text=True))
 
             logging.info(f"✅ Ürün '{product_name}' başarıyla güncellendi.")
@@ -634,9 +677,57 @@ class ProductSyncManager:
             logging.error(f"Ürün güncelleme hatası: {e}"); raise
 
     def _get_product_variants(self, product_gid):
-        q="""query gPV($id:ID!){product(id:$id){variants(first:250){edges{node{id inventoryItem{id sku}}}}}}"""
-        data=self.shopify.execute_graphql(q,{"id":product_gid})
-        return [e['node'] for e in data.get("product",{}).get("variants",{}).get("edges",[])]
+        """Mevcut varyantları, SKU'ları ve stok seviyeleri ile birlikte çeker."""
+        query = """
+        query getProductVariantsWithStock($id: ID!) {
+          product(id: $id) {
+            variants(first: 100) {
+              edges {
+                node {
+                  id
+                  sku
+                  inventoryItem {
+                    id
+                    sku
+                    inventoryLevels(first: 1) {
+                      edges {
+                        node {
+                          available
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+        data = self.shopify.execute_graphql(query, {"id": product_gid})
+        variants = data.get("product", {}).get("variants", {}).get("edges", [])
+        
+        # SKU'ları anahtar olarak kullanan ve stok bilgisini içeren bir sözlük oluştur
+        variant_details = {}
+        for edge in variants:
+            node = edge.get('node', {})
+            sku = node.get('sku')
+            if not sku:
+                continue
+
+            inventory_item = node.get('inventoryItem', {})
+            inventory_levels = inventory_item.get('inventoryLevels', {}).get('edges', [])
+            
+            # Stok seviyesini al, yoksa 0 olarak varsay
+            quantity = 0
+            if inventory_levels and inventory_levels[0].get('node'):
+                quantity = inventory_levels[0]['node'].get('available', 0)
+
+            variant_details[sku] = {
+                'variantId': node['id'],
+                'inventoryItemId': inventory_item['id'],
+                'quantity': quantity
+            }
+        return variant_details
 
     def _add_variants_to_product(self, product_gid, new_variants, main_product):
         v_in = [self._prepare_variant_bulk_input(v, main_product, c=True) for v in new_variants]
