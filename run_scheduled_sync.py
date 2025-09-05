@@ -1,12 +1,15 @@
 import os
 import logging
 import sys
+import threading
+import re
 
 # Proje yolunu Python path'ine ekle
 project_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_path)
 
-import shopify_sync
+# GÜNCELLEME: Ana senkronizasyon fonksiyonunu doğrudan içe aktarıyoruz.
+from shopify_sync import sync_products_from_sentos_api
 
 # Temel loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -17,9 +20,8 @@ def main():
     zamanlanmış senkronizasyon görevini başlatır.
     """
     
-    # GÜNCELLEME: Hangi modda çalışacağını ortam değişkeninden oku.
-    # Eğer SYNC_MODE belirtilmemişse, varsayılan olarak "Stock & Variants Only" kullan.
-    sync_mode_to_run = os.getenv("SYNC_MODE", "Stock & Variants Only")
+    # Hangi modda çalışacağını ortam değişkeninden oku.
+    sync_mode_to_run = os.getenv("SYNC_MODE", "Sadece Stok ve Varyantlar")
 
     logging.info(f"GitHub Actions tarafından tetiklenen senkronizasyon başlıyor... Mod: {sync_mode_to_run}")
 
@@ -40,17 +42,36 @@ def main():
         sys.exit(1)
 
     try:
-        # Cron için özel olarak tasarlanmış senkronizasyon fonksiyonunu çağır
-        shopify_sync.run_sync_for_cron(
+        # GÜNCELLEME: `run_sync_for_cron` fonksiyonunun yaptığı işi buraya taşıdık.
+        # Bu, `AttributeError` hatasını ortadan kaldırır.
+        
+        # 1. Callback fonksiyonunu tanımla (loglama için)
+        def cron_progress_callback(update):
+            if 'message' in update:
+                logging.info(update['message'])
+            if 'log_detail' in update:
+                # HTML etiketlerini temizleyerek log'a yaz
+                clean_log = re.sub('<[^<]+?>', '', update['log_detail'])
+                logging.info(clean_log.strip())
+
+        # 2. Durdurma olayını tanımla (cron'da kullanılmasa da fonksiyon bunu bekler)
+        stop_event = threading.Event()
+        
+        # 3. Ana senkronizasyon fonksiyonunu doğrudan çağır
+        sync_products_from_sentos_api(
             store_url=config["store_url"],
             access_token=config["access_token"],
             sentos_api_url=config["sentos_api_url"],
             sentos_api_key=config["sentos_api_key"],
             sentos_api_secret=config["sentos_api_secret"],
             sentos_cookie=config["sentos_cookie"],
-            sync_mode=sync_mode_to_run, # GÜNCELLEME: Modu buraya iletiyoruz
+            test_mode=False,  # Zamanlanmış görevler her zaman tam çalışmalıdır.
+            progress_callback=cron_progress_callback,
+            stop_event=stop_event,
+            sync_mode=sync_mode_to_run,
             max_workers=4
         )
+        
         logging.info(f"Zamanlanmış senkronizasyon (Mod: {sync_mode_to_run}) başarıyla tamamlandı.")
     except Exception as e:
         logging.critical(f"Senkronizasyon sırasında ölümcül bir hata oluştu: {e}", exc_info=True)
