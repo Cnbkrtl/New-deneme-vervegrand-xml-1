@@ -823,30 +823,31 @@ def _process_sentos_products_in_batches(sync_manager, sentos_api, sync_mode, pro
 def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, progress_callback, stop_event, max_workers=3, sync_mode="Full Sync (Create & Update All)"):
     start_time = time.monotonic()
     try:
+        # API bağlantılarını ve yöneticisini hazırla
         shopify_api = ShopifyAPI(store_url, access_token)
         sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
         sync_manager = ProductSyncManager(shopify_api, sentos_api)
 
-        # --- DÜZELTME: Orijinal koddaki gibi eş zamanlı (concurrent) veri çekme ---
-        progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 10})
-        shopify_load_thread = threading.Thread(
-            target=shopify_api.load_all_products, 
-            args=(progress_callback,),
-            name="ShopifyLoader"
-        )
-        shopify_load_thread.start()
-        
+        # --- GÜVENLİK GÜNCELLEMESİ: Thread içinde thread yapısı kaldırıldı ---
+        # Shopify ürünlerini ana görev içinde, güvenli bir hata yakalama bloğuyla yükle.
+        # Bu, thread'in sessizce ölmesini ve uygulamanın takılmasını engeller.
+        try:
+            progress_callback({'message': "Shopify ürünleri önbelleğe alınıyor...", 'progress': 10})
+            shopify_api.load_all_products(progress_callback=progress_callback)
+            logging.info("Shopify önbelleği başarıyla yüklendi.")
+        except Exception as e:
+            # Eğer Shopify ürünleri çekilemezse, hatayı yakala ve arayüze bildir.
+            logging.critical(f"Kritik hata: Shopify ürünleri çekilemedi. Hata: {e}")
+            # Bu hatayı ana except bloğuna göndererek arayüzde gösterilmesini sağla.
+            raise Exception(f"Shopify bağlantı hatası: Lütfen ayarlarınızı kontrol edin. Detay: {e}")
+
         if stop_event.is_set():
-            raise Exception("İşlem başlangıçta durduruldu.")
-        
-        # Shopify yüklenirken, Sentos ürünlerini sayfa sayfa işlemeye başla
+            raise Exception("İşlem, Shopify ürünleri yüklendikten sonra durduruldu.")
+
+        # Shopify yüklemesi başarılıysa Sentos işlemlerine devam et
         progress_callback({'message': "Sentos ürünleri işlenmeye başlıyor...", 'progress': 40})
         
-        # Ana işlem, Shopify önbelleğinin tamamlanmasını bekler.
-        # Bu, Sentos işlemeye başlamadan önce Shopify ürünlerinin hazır olmasını garantiler.
-        shopify_load_thread.join()
-        logging.info("Shopify önbelleği hazır. Ana senkronizasyon devam ediyor.")
-
+        # Ürünleri sayfa sayfa işleyen ana döngüyü çağır
         _process_sentos_products_in_batches(
             sync_manager, sentos_api, sync_mode, progress_callback, stop_event, max_workers, test_mode
         )
@@ -861,7 +862,8 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
         logging.info(f"Senkronizasyon {results['duration']} sürede tamamlandı. Sonuçlar: {results['stats']}")
 
     except Exception as e:
-        logging.critical(f"Senkronizasyon görevi başlatılamadı veya kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
+        # Ana try-except bloğu, tüm hataları yakalayıp arayüze gönderir.
+        logging.critical(f"Senkronizasyon görevi sırasında kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
 
 def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, sync_mode="Stock & Variants Only", max_workers=2):
