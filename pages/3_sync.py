@@ -16,7 +16,7 @@ from shopify_sync import (
 from log_manager import save_log
 
 # --- Session State Başlatma ---
-# Ana senkronizasyon için durumlar
+# Tüm state'ler aynı kalıyor
 if 'sync_running' not in st.session_state:
     st.session_state.sync_running = False
 if 'sync_thread' not in st.session_state:
@@ -26,7 +26,6 @@ if 'sync_results' not in st.session_state:
 if 'live_log' not in st.session_state:
     st.session_state.live_log = []
 
-# "Eksik Ürünleri Oluştur" özelliği için ayrı durumlar
 if 'sync_missing_running' not in st.session_state:
     st.session_state.sync_missing_running = False
 if 'missing_sync_thread' not in st.session_state:
@@ -36,7 +35,6 @@ if 'sync_missing_results' not in st.session_state:
 if 'live_log_missing' not in st.session_state:
     st.session_state.live_log_missing = []
 
-# Ortak kullanılan genel durumlar
 if 'stop_sync_event' not in st.session_state:
     st.session_state.stop_sync_event = None
 if 'progress_queue' not in st.session_state:
@@ -59,24 +57,9 @@ st.markdown("""
 sync_ready = (st.session_state.get('shopify_status') == 'connected' and 
               st.session_state.get('sentos_status') == 'connected')
 
-# Herhangi bir senkronizasyonun çalışıp çalışmadığını kontrol eden yardımcı değişken
 is_any_sync_running = st.session_state.sync_running or st.session_state.sync_missing_running
 
-# Ortak thread başlatma fonksiyonu
-def start_sync_thread(target_function, state_key_running, state_key_thread, thread_kwargs):
-    st.session_state[state_key_running] = True
-    st.session_state.stop_sync_event = threading.Event()
-    
-    # Ortak callback'i ve stop event'i kwargs'a ekle
-    thread_kwargs['progress_callback'] = lambda update: st.session_state.progress_queue.put(update)
-    thread_kwargs['stop_event'] = st.session_state.stop_sync_event
-
-    thread = threading.Thread(target=target_function, kwargs=thread_kwargs, daemon=True)
-    st.session_state[state_key_thread] = thread
-    thread.start()
-    st.rerun()
-
-# --- Ortak İlerleme Gösterim Fonksiyonu ---
+# --- Ortak İlerleme ve Sonuç Gösterim Fonksiyonları (Değişiklik yok) ---
 def display_progress(title, results_key, log_key):
     st.subheader(title)
     if st.button("🛑 Stop Current Task", use_container_width=True, key=f"stop_{results_key}"):
@@ -125,12 +108,10 @@ def display_progress(title, results_key, log_key):
             st.error(f"UI update loop error: {e}")
             break
     
-    # Bittiğinde state'i temizle ve sayfayı yenile
     st.session_state.sync_running = False
     st.session_state.sync_missing_running = False
     st.rerun()
 
-# --- Ortak Sonuç Gösterim Fonksiyonu ---
 def display_results(title, results):
     st.subheader(title)
     stats = results.get('stats', {})
@@ -153,26 +134,24 @@ def display_results(title, results):
             st.info("No detailed logs were generated.")
 
 
+# --- Ana Arayüz Mantığı ---
 if not sync_ready and not is_any_sync_running:
     st.warning("⚠️ Please configure and test both API connections in Settings before starting a sync.")
 
-# === GÖREV ÇALIŞIYORSA GÖSTERİM ALANI ===
 elif st.session_state.sync_running:
     display_progress("📊 Sync in Progress...", 'sync_results', 'live_log')
 elif st.session_state.sync_missing_running:
     display_progress("📊 Creating Missing Products...", 'sync_missing_results', 'live_log_missing')
 
-# === GÖREV YOKSA KONTROL PANELİ ===
 else:
-    # --- Önceki Görev Sonuçları ---
     if st.session_state.sync_results:
         display_results("✅ Sync Task Completed", st.session_state.sync_results)
-        st.session_state.sync_results = None # Bir kez gösterdikten sonra temizle
+        st.session_state.sync_results = None
     if st.session_state.sync_missing_results:
         display_results("✅ Missing Products Task Completed", st.session_state.sync_missing_results)
-        st.session_state.sync_missing_results = None # Bir kez gösterdikten sonra temizle
+        st.session_state.sync_missing_results = None
 
-    # --- BÖLÜM 1: GENEL SENKRONİZASYON ---
+    # --- BÖLÜM 1: GENEL SENKRONİZASYON (DÜZELTİLMİŞ BAŞLATMA MANTIĞI) ---
     st.markdown("---")
     st.subheader("Start a New General Sync Task")
     
@@ -182,32 +161,69 @@ else:
     max_workers = col2.number_input("Concurrent Workers", 1, 50, 5)
 
     if st.button("🚀 Start General Sync", type="primary", use_container_width=True, disabled=not sync_ready):
+        st.session_state.sync_running = True
         st.session_state.live_log = []
-        kwargs = {
-            'store_url': st.session_state.shopify_store, 'access_token': st.session_state.shopify_token,
-            'sentos_api_url': st.session_state.sentos_api_url, 'sentos_api_key': st.session_state.sentos_api_key,
-            'sentos_api_secret': st.session_state.sentos_api_secret, 'sentos_cookie': st.session_state.sentos_cookie,
-            'test_mode': test_mode, 'max_workers': max_workers, 'sync_mode': sync_mode
+        st.session_state.stop_sync_event = threading.Event()
+        
+        # Gerekli tüm argümanları bir sözlük (dictionary) olarak hazırla
+        thread_kwargs = {
+            'store_url': st.session_state.shopify_store, 
+            'access_token': st.session_state.shopify_token,
+            'sentos_api_url': st.session_state.sentos_api_url, 
+            'sentos_api_key': st.session_state.sentos_api_key,
+            'sentos_api_secret': st.session_state.sentos_api_secret, 
+            'sentos_cookie': st.session_state.sentos_cookie,
+            'test_mode': test_mode, 
+            'max_workers': max_workers, 
+            'sync_mode': sync_mode,
+            'progress_callback': lambda update: st.session_state.progress_queue.put(update),
+            'stop_event': st.session_state.stop_sync_event
         }
-        start_sync_thread(sync_products_from_sentos_api, 'sync_running', 'sync_thread', kwargs)
+        
+        # Thread'i doğrudan burada oluştur ve başlat
+        thread = threading.Thread(
+            target=sync_products_from_sentos_api, 
+            kwargs=thread_kwargs, 
+            daemon=True
+        )
+        st.session_state.sync_thread = thread
+        thread.start()
+        st.rerun()
 
-    # --- BÖLÜM 2: EKSİK ÜRÜNLERİ OLUŞTURMA ---
+    # --- BÖLÜM 2: EKSİK ÜRÜNLERİ OLUŞTURMA (DÜZELTİLMİŞ BAŞLATMA MANTIĞI) ---
     st.markdown("---")
     with st.expander("✨ **Feature: Create Missing Products Only**"):
         st.info("This tool compares Sentos with Shopify and only creates products that do not exist in Shopify. It does not update existing products.")
         missing_test_mode = st.checkbox("Test Mode (Scan first 20 products)", value=True, key="missing_test_mode")
         
         if st.button("🚀 Find & Create Missing Products", use_container_width=True, disabled=not sync_ready):
+            st.session_state.sync_missing_running = True
             st.session_state.live_log_missing = []
-            kwargs = {
-                'store_url': st.session_state.shopify_store, 'access_token': st.session_state.shopify_token,
-                'sentos_api_url': st.session_state.sentos_api_url, 'sentos_api_key': st.session_state.sentos_api_key,
-                'sentos_api_secret': st.session_state.sentos_api_secret, 'sentos_cookie': st.session_state.sentos_cookie,
-                'test_mode': missing_test_mode, 'max_workers': max_workers
-            }
-            start_sync_thread(sync_missing_products_only, 'sync_missing_running', 'missing_sync_thread', kwargs)
+            st.session_state.stop_sync_event = threading.Event()
 
-    # --- BÖLÜM 3: TEKİL ÜRÜN GÜNCELLEME (SKU İLE) --- (EKLENEN BÖLÜM)
+            thread_kwargs = {
+                'store_url': st.session_state.shopify_store, 
+                'access_token': st.session_state.shopify_token,
+                'sentos_api_url': st.session_state.sentos_api_url, 
+                'sentos_api_key': st.session_state.sentos_api_key,
+                'sentos_api_secret': st.session_state.sentos_api_secret, 
+                'sentos_cookie': st.session_state.sentos_cookie,
+                'test_mode': missing_test_mode, 
+                'max_workers': max_workers,
+                'progress_callback': lambda update: st.session_state.progress_queue.put(update),
+                'stop_event': st.session_state.stop_sync_event
+            }
+            
+            thread = threading.Thread(
+                target=sync_missing_products_only, 
+                kwargs=thread_kwargs, 
+                daemon=True
+            )
+            st.session_state.missing_sync_thread = thread
+            thread.start()
+            st.rerun()
+
+    # --- BÖLÜM 3: TEKİL ÜRÜN GÜNCELLEME (Değişiklik yok, bu zaten doğru çalışıyordu) ---
     st.markdown("---")
     with st.expander("✨ **Feature: Sync Single Product by SKU**"):
         st.info("Enter the model code (SKU) of a product from Sentos to instantly find and fully update its counterpart in Shopify.")
