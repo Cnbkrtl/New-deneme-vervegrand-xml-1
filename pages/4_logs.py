@@ -3,6 +3,9 @@ import pandas as pd
 from datetime import datetime
 from log_manager import load_logs
 
+# --- Sayfa Yapılandırması ve Yardımcı Fonksiyonlar ---
+st.set_page_config(layout="wide", page_title="Log ve Analatik")
+
 # Giriş kontrolü
 if not st.session_state.get("authentication_status"):
     st.error("Please log in to access this page.")

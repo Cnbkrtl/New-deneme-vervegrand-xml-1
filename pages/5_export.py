@@ -12,7 +12,7 @@ import os # YENİ: Ortak ön-ek (prefix) bulmak için eklendi
 import logging # YENİ: Hata ayıklama için eklendi
 
 # --- Sayfa Yapılandırması ve Yardımcı Fonksiyonlar ---
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="Liste Oluşturucu")
 
 # Giriş kontrolü
 if not st.session_state.get("authentication_status"):
