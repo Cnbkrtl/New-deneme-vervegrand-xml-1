@@ -1,11 +1,11 @@
 # .github/workflows/weekly_image_sync.yml
 
-name: Weekly Image Sync
+name: Weekly Image and SEO Alt-Text Sync
 
 on:
-  # Her Pazartesi sabahı Türkiye saati ile 9'da çalışır (UTC 6)
+  # Her Pazar sabaha karşı 03:00'te çalıştır (UTC)
   schedule:
-    - cron: '0 6 * * 1'
+    - cron: '0 3 * * 0'
   
   # Manuel olarak da çalıştırabilmek için butonu etkinleştir
   workflow_dispatch:
@@ -28,8 +28,8 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 4. Adım: Senkronizasyon script'ini çalıştır (Sadece Resim Modunda)
-      - name: Run product image sync
+      # 4. Adım: Resim senkronizasyon script'ini çalıştır
+      - name: Run image sync with SEO alt text
         env:
           # Bu kısım, GitHub Secrets'tan ayarları okur
           SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
@@ -38,6 +38,6 @@ jobs:
           SENTOS_API_KEY: ${{ secrets.SENTOS_API_KEY }}
           SENTOS_API_SECRET: ${{ secrets.SENTOS_API_SECRET }}
           SENTOS_COOKIE: ${{ secrets.SENTOS_COOKIE }}
-          # DEĞİŞİKLİK: Görev modu "Images Only" olarak güncellendi.
-          SYNC_MODE: "Images Only"
+          # YENİ: Bu workflow sadece resimleri ve SEO alt metinlerini günceller.
+          SYNC_MODE: "SEO Alt Metinli Resimler"
         run: python run_scheduled_sync.py

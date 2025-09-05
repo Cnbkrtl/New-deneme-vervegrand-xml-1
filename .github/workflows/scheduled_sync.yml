@@ -1,6 +1,6 @@
 # .github/workflows/scheduled_sync.yml
 
-name: Scheduled Product Sync
+name: Scheduled Stock and Variant Sync
 
 on:
   # Her 2 saatte bir otomatik olarak çalıştır
@@ -38,4 +38,7 @@ jobs:
           SENTOS_API_KEY: ${{ secrets.SENTOS_API_KEY }}
           SENTOS_API_SECRET: ${{ secrets.SENTOS_API_SECRET }}
           SENTOS_COOKIE: ${{ secrets.SENTOS_COOKIE }}
+          # DÜZELTME: Hangi modda çalışacağı burada açıkça belirtildi.
+          # Bu, her 2 saatte bir sadece stok ve varyantları günceller.
+          SYNC_MODE: "Sadece Stok ve Varyantlar"
         run: python run_scheduled_sync.py
