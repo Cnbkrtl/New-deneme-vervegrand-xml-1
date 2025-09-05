@@ -16,7 +16,6 @@ from shopify_sync import (
 from log_manager import save_log
 
 # --- Session State Başlatma ---
-# Tüm state'ler aynı kalıyor
 if 'sync_running' not in st.session_state:
     st.session_state.sync_running = False
 if 'sync_thread' not in st.session_state:
