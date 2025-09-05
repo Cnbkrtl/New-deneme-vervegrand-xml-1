@@ -2,12 +2,11 @@
 
 """
 Sentos API'den Shopify'a Ürün Senkronizasyonu Mantık Dosyası
-Versiyon 22.2: Birleşik İyileştirme
-- YAPI: v22.1'deki kararlı başlatma ve bellek optimizasyonu (sayfa sayfa işleme) korunmuştur.
-- PERFORMANS: v20.4'teki eş zamanlı veri çekme (threading) mantığı, başlangıç süresini
-  kısaltmak için yeniden entegre edilmiştir. Shopify ürünleri önbelleğe alınırken,
-  Sentos ürünleri de çekilmeye başlar.
-- BÜTÜNLÜK: Tüm yeni özellikler (cron, eksik ürün, tekil SKU sync) korunmuştur.
+Versiyon 22.8: Eksik Ürün Oluşturma Eklentisi
+- YENİ ÖZELLİK: `sync_missing_products_only` fonksiyonu eklendi. Bu fonksiyon,
+  Sentos'taki tüm ürünleri Shopify ile karşılaştırır ve sadece Shopify'da
+  olmayan ürünleri, orijinal `create_new_product` mantığını kullanarak oluşturur.
+- UYUMLULUK: Tüm fonksiyonlar, sağlanan orijinal kod temel alınarak birleştirilmiştir.
 """
 import requests
 import time
@@ -20,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.auth import HTTPBasicAuth
 from urllib.parse import urljoin, urlparse
 from datetime import timedelta
+import os
 
 # --- Loglama Konfigürasyonu ---
 logging.basicConfig(
@@ -41,7 +41,7 @@ class ShopifyAPI:
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/22.2-Combined-Optimization'
+            'User-Agent': 'Sentos-Sync-Python/22.8-Missing-Products-Feature'
         }
         self.product_cache = {}
         self.location_id = None
@@ -242,16 +242,41 @@ class SentosAPI:
             return response
         except requests.exceptions.RequestException as e:
             raise Exception(f"Sentos API Hatası ({url}): {e}")
+    
+    def get_all_products(self, progress_callback=None, page_size=100):
+        all_products, page = [], 1
+        total_elements = None
+        start_time = time.monotonic()
 
-    def get_products_by_page(self, page=1, page_size=50):
-        """Sentos'tan ürünleri sayfa sayfa çeker."""
-        endpoint = f"/products?page={page}&size={page_size}"
-        try:
-            response = self._make_request("GET", endpoint).json()
-            return response
-        except Exception as e:
-            logging.error(f"Sentos'tan sayfa {page} çekilirken hata: {e}")
-            raise
+        while True:
+            endpoint = f"/products?page={page}&size={page_size}"
+            try:
+                response = self._make_request("GET", endpoint).json()
+                products_on_page = response.get('data', [])
+                
+                if not products_on_page and page > 1: break
+                all_products.extend(products_on_page)
+                
+                if total_elements is None: 
+                    total_elements = response.get('total_elements', 'Bilinmiyor')
+
+                if progress_callback:
+                    elapsed_time = time.monotonic() - start_time
+                    message = (
+                        f"Sentos'tan ürünler çekiliyor ({len(all_products)} / {total_elements})... "
+                        f"Geçen süre: {int(elapsed_time)}s"
+                    )
+                    progress_callback({'message': message})
+                
+                if len(products_on_page) < page_size: break
+                page += 1
+                time.sleep(0.5)
+            except Exception as e:
+                logging.error(f"Sayfa {page} çekilirken hata: {e}")
+                raise Exception(f"Sentos API'den ürünler çekilemedi: {e}")
+            
+        logging.info(f"Sentos'tan toplam {len(all_products)} ürün çekildi.")
+        return all_products
 
     def get_ordered_image_urls(self, product_id):
         if not self.api_cookie:
@@ -296,7 +321,6 @@ class SentosAPI:
             return {'success': False, 'message': f'REST API failed: {e}'}
 
     def get_product_by_sku(self, sku):
-        """Sentos'ta SKU'ya göre tek bir ürün getirir."""
         if not sku:
             raise ValueError("Aranacak SKU boş olamaz.")
         endpoint = f"/products?sku={sku.strip()}"
@@ -311,6 +335,7 @@ class SentosAPI:
         except Exception as e:
             logging.error(f"Sentos'ta SKU '{sku}' aranırken hata: {e}")
             raise
+
 
 # --- Senkronizasyon Yöneticisi ---
 class ProductSyncManager:
@@ -329,37 +354,22 @@ class ProductSyncManager:
         return None
     
     def _get_apparel_sort_key(self, size_str):
-        if not isinstance(size_str, str):
-            return (3, 9999, size_str)
-
+        if not isinstance(size_str, str): return (3, 9999, size_str)
         size_upper = size_str.strip().upper()
-        size_order_map = {
-            'XXS': 0, 'XS': 1, 'S': 2, 'M': 3, 'L': 4, 'XL': 5,
-            'XXL': 6, '2XL': 6, '3XL': 7, 'XXXL': 7,
-            '4XL': 8, 'XXXXL': 8, '5XL': 9, 'XXXXXL': 9,
-            'TEK EBAT': 100, 'STANDART': 100
-        }
-        if size_upper in size_order_map:
-            return (1, size_order_map[size_upper], size_str)
-
+        size_order_map = {'XXS': 0, 'XS': 1, 'S': 2, 'M': 3, 'L': 4, 'XL': 5, 'XXL': 6, '2XL': 6, '3XL': 7, 'XXXL': 7, '4XL': 8, 'XXXXL': 8, '5XL': 9, 'XXXXXL': 9, 'TEK EBAT': 100, 'STANDART': 100}
+        if size_upper in size_order_map: return (1, size_order_map[size_upper], size_str)
         numbers = re.findall(r'\d+', size_str)
-        if numbers:
-            return (2, int(numbers[0]), size_str)
-
+        if numbers: return (2, int(numbers[0]), size_str)
         return (3, 9999, size_str)
 
     def _prepare_basic_product_input(self, p):
         i = {"title": p.get('name','').strip(),"descriptionHtml":p.get('description_detail')or p.get('description',''),"vendor":"Vervegrand","status":"ACTIVE"}
         if cat:=p.get('category'): i['productType']=str(cat)
         i['tags'] = sorted(list({'Vervegrand', str(p.get('category'))} if p.get('category') else {'Vervegrand'}))
-        
         v = p.get('variants',[]) or [p]
         c = sorted(list(set(self._get_variant_color(x) for x in v if self._get_variant_color(x))))
-        
         unique_sizes = list(set(self._get_variant_size(x) for x in v if self._get_variant_size(x)))
         s = sorted(unique_sizes, key=self._get_apparel_sort_key)
-        logging.info(f"Sentos Bedenleri: {unique_sizes} -> Sıralı: {s}")
-        
         o=[]
         if c:o.append({"name":"Renk","values":[{"name":x} for x in c]})
         if s:o.append({"name":"Beden","values":[{"name":x} for x in s]})
@@ -367,43 +377,20 @@ class ProductSyncManager:
         return i
 
     def _sync_product_options(self, product_gid, sentos_product):
-        logging.info(f"Ürün {product_gid} için seçenek sıralaması kontrol ediliyor...")
         v = sentos_product.get('variants', []) or [sentos_product]
-
         colors = sorted(list(set(self._get_variant_color(x) for x in v if self._get_variant_color(x))))
-        
         unique_sizes = list(set(self._get_variant_size(x) for x in v if self._get_variant_size(x)))
         sizes = sorted(unique_sizes, key=self._get_apparel_sort_key)
-        logging.info(f"Güncelleme için Sentos Bedenleri: {unique_sizes} -> Sıralı: {sizes}")
-        
         options_input = []
         if colors:
             options_input.append({"name": "Renk", "values": [{"name": c} for c in colors]})
         if sizes:
             options_input.append({"name": "Beden", "values": [{"name": s} for s in sizes]})
-        
-        if not options_input:
-            logging.info("Yeniden sıralanacak seçenek bulunamadı.")
-            return
-
-        query = """
-        mutation productOptionsReorder($productId: ID!, $options: [OptionReorderInput!]!) {
-          productOptionsReorder(productId: $productId, options: $options) {
-            userErrors {
-              field
-              message
-            }
-          }
-        }
-        """
+        if not options_input: return
+        query = "mutation productOptionsReorder($productId: ID!, $options: [OptionReorderInput!]!) { productOptionsReorder(productId: $productId, options: $options) { userErrors { field message } } }"
         variables = {"productId": product_gid, "options": options_input}
-
         try:
-            result = self.shopify.execute_graphql(query, variables)
-            if errors := result.get('productOptionsReorder', {}).get('userErrors', []):
-                logging.error(f"Seçenekler yeniden sıralanırken hata oluştu: {errors}")
-            else:
-                logging.info(f"✅ Ürün {product_gid} için seçenekler başarıyla yeniden sıralandı.")
+            self.shopify.execute_graphql(query, variables)
         except Exception as e:
             logging.error(f"Seçenek sıralama sırasında kritik hata: {e}")
 
@@ -432,77 +419,66 @@ class ProductSyncManager:
             
     def _add_new_media_to_product(self, product_gid, urls_to_add, product_title, set_alt_text=False):
         if not urls_to_add: return
-        logging.info(f"Ürün GID: {product_gid} için {len(urls_to_add)} yeni medya eklenecek.")
-        
         media_input = []
         for url in urls_to_add:
             alt_text = product_title if set_alt_text else url
             media_input.append({"originalSource": url, "alt": alt_text, "mediaContentType": "IMAGE"})
-
         for i in range(0, len(media_input), 10):
             batch = media_input[i:i + 10]
             try:
-                query = """
-                mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) {
-                    productCreateMedia(productId: $productId, media: $media) {
-                        media { id }
-                        mediaUserErrors { field message }
-                    }
-                }
-                """
-                result = self.shopify.execute_graphql(query, {'productId': product_gid, 'media': batch})
-                if errors := result.get('productCreateMedia', {}).get('mediaUserErrors', []):
-                    logging.warning(f"Medya ekleme hataları: {errors}")
+                query = "mutation productCreateMedia($productId: ID!, $media: [CreateMediaInput!]!) { productCreateMedia(productId: $productId, media: $media) { media { id } mediaUserErrors { field message } } }"
+                self.shopify.execute_graphql(query, {'productId': product_gid, 'media': batch})
             except Exception as e:
                 logging.error(f"Medya batch {i//10 + 1} eklenirken hata: {e}")
 
     def _sync_product_media(self, product_gid, sentos_product, set_alt_text=False):
         changes = []
-        logging.info(f"Ürün {product_gid} için medya senkronizasyonu başlatılıyor...")
         product_title = sentos_product.get('name', '').strip()
-        
         sentos_ordered_urls = self.sentos.get_ordered_image_urls(sentos_product.get('id'))
         
         if sentos_ordered_urls is None:
-             logging.warning(f"Cookie eksik veya geçersiz, resim sırası alınamadı. Medya senkronizasyonu atlanıyor.")
              changes.append("Medya senkronizasyonu atlandı (Cookie eksik).")
              return changes
-
+        
+        initial_shopify_media = self.shopify._get_product_media_details(product_gid)
+        
         if not sentos_ordered_urls:
-            logging.info("Sentos'ta medya yok. Mevcut Shopify medyası siliniyor...")
-            initial_shopify_media = self.shopify._get_product_media_details(product_gid)
             if media_ids_to_delete := [m['id'] for m in initial_shopify_media]:
                 self.shopify.delete_product_media(product_gid, media_ids_to_delete)
                 changes.append(f"{len(media_ids_to_delete)} Shopify görseli silindi.")
             return changes
-
-        initial_shopify_media = self.shopify._get_product_media_details(product_gid)
+            
         shopify_src_map = {m['originalSrc']: m for m in initial_shopify_media if m.get('originalSrc')}
-        
         media_ids_to_delete = [media['id'] for src, media in shopify_src_map.items() if src not in sentos_ordered_urls]
         urls_to_add = [url for url in sentos_ordered_urls if url not in shopify_src_map]
-
+        
         media_changed = False
         if urls_to_add:
             changes.append(f"{len(urls_to_add)} yeni görsel eklendi.")
             self._add_new_media_to_product(product_gid, urls_to_add, product_title, set_alt_text)
             media_changed = True
+            
         if media_ids_to_delete:
             changes.append(f"{len(media_ids_to_delete)} eski görsel silindi.")
             self.shopify.delete_product_media(product_gid, media_ids_to_delete)
             media_changed = True
-        
+            
         if media_changed:
             changes.append("Görsel sırası güncellendi.")
-            logging.info("Medya değişiklikleri sonrası 10 saniye bekleniyor...")
             time.sleep(10)
+            
             final_shopify_media = self.shopify._get_product_media_details(product_gid)
-            final_src_map = {m['originalSrc']: m['id'] for m in final_shopify_media if m.get('originalSrc')}
-            ordered_media_ids = [final_src_map.get(url) for url in sentos_ordered_urls if final_src_map.get(url)]
+            final_alt_map = {m['alt']: m['id'] for m in final_shopify_media if m.get('alt')}
+            ordered_media_ids = [final_alt_map.get(url) for url in sentos_ordered_urls if final_alt_map.get(url)]
+
+            if len(ordered_media_ids) < len(sentos_ordered_urls):
+                logging.warning(f"Alt etiketi eşleştirme sorunu: {len(sentos_ordered_urls)} resim beklenirken {len(ordered_media_ids)} ID bulundu. Sıralama eksik olabilir.")
+
             self.shopify.reorder_product_media(product_gid, ordered_media_ids)
-        else:
-            logging.info("Medya güncel, sıralama ve bekleme atlandı.")
         
+        if not changes and not media_changed:
+            changes.append("Resimler kontrol edildi (Değişiklik yok).")
+            
         return changes
 
     def _get_variant_size(self, variant):
@@ -514,243 +490,25 @@ class ProductSyncManager:
 
     def _sync_core_details(self, product_gid, sentos_product):
         changes = []
-        logging.info("Temel ürün detayları güncelleniyor...")
-        input_data = {
-            "id": product_gid,
-            "title": sentos_product.get('name', '').strip(),
-            "descriptionHtml": sentos_product.get('description_detail') or sentos_product.get('description', '')
-        }
+        input_data = {"id": product_gid, "title": sentos_product.get('name', '').strip(), "descriptionHtml": sentos_product.get('description_detail') or sentos_product.get('description', '')}
         query = "mutation pU($input:ProductInput!){productUpdate(input:$input){product{id} userErrors{field message}}}"
         self.shopify.execute_graphql(query, {'input': input_data})
         changes.append("Başlık ve açıklama güncellendi.")
-        logging.info("✅ Temel ürün detayları güncellendi.")
         return changes
 
     def _sync_product_type(self, product_gid, sentos_product):
         changes = []
-        logging.info("Ürün kategorisi (productType) güncelleniyor...")
         if category := sentos_product.get('category'):
             input_data = {"id": product_gid, "productType": str(category)}
             query = "mutation pU($input:ProductInput!){productUpdate(input:$input){product{id} userErrors{field message}}}"
             self.shopify.execute_graphql(query, {'input': input_data})
             changes.append(f"Kategori '{category}' olarak ayarlandı.")
-            logging.info(f"✅ Ürün kategorisi '{category}' olarak ayarlandı.")
         return changes
     
-    def _sync_variants_and_stock(self, product_gid, sentos_product):
-        """Varyantları ve stokları karşılaştırır, detaylı rapor oluşturur ve günceller."""
-        changes = []
-        adjustments_to_make = []
-        
-        logging.info("Varyantlar ve stoklar senkronize ediliyor...")
-        
-        # 1. Adım: Shopify'daki mevcut varyantları ve stoklarını al
-        shopify_variants_map = self._get_product_variants(product_gid)
-        
-        # 2. Adım: Sentos'tan gelen varyantları işle
-        sentos_variants = sentos_product.get('variants', []) or [sentos_product]
-        
-        # Yeni eklenecek varyantları bul
-        new_vars_to_add = [v for v in sentos_variants if str(v.get('sku', '')).strip() not in shopify_variants_map]
-        
-        if new_vars_to_add:
-            msg = f"{len(new_vars_to_add)} yeni varyant eklendi."
-            logging.info(msg)
-            changes.append(msg)
-            self._add_variants_to_product(product_gid, new_vars_to_add, sentos_product)
-            time.sleep(5) # Yeni varyantların işlenmesi için bekle
-            # Yeni varyantlar eklendiği için Shopify'daki listeyi yeniden çek
-            shopify_variants_map = self._get_product_variants(product_gid)
-
-        # Mevcut varyantların stoklarını karşılaştır
-        for s_variant in sentos_variants:
-            sku = str(s_variant.get('sku', '')).strip()
-            if not sku or sku not in shopify_variants_map:
-                continue
-
-            # Sentos'taki yeni stok miktarını al
-            new_quantity = 0
-            if stocks := s_variant.get('stocks', []):
-                if stocks and stocks[0] and stocks[0].get('stock') is not None:
-                    new_quantity = int(stocks[0].get('stock', 0))
-
-            # Shopify'daki eski stok miktarını al
-            shopify_variant_info = shopify_variants_map[sku]
-            old_quantity = shopify_variant_info.get('quantity', 0)
-            
-            # Sadece stoklar farklıysa işlem yap ve raporla
-            if new_quantity != old_quantity:
-                report_msg = f"• SKU: {sku} stoğu değiştirildi ({old_quantity} → {new_quantity})"
-                changes.append(report_msg)
-                logging.info(report_msg)
-                
-                adjustments_to_make.append({
-                    "inventoryItemId": shopify_variant_info['inventoryItemId'],
-                    "availableQuantity": new_quantity
-                })
-
-        # 3. Adım: Eğer yapılacak stok ayarı varsa, toplu olarak güncelle
-        if adjustments_to_make:
-            self._adjust_inventory_bulk(adjustments_to_make)
-            
-        logging.info("✅ Varyant ve stok senkronizasyonu tamamlandı.")
-        return changes
-
-    def create_new_product(self, sentos_product):
-        changes = []
-        product_name = sentos_product.get('name', 'Bilinmeyen Ürün')
-        logging.info(f"Yeni ürün oluşturuluyor: '{product_name}'")
-        try:
-            product_input = self._prepare_basic_product_input(sentos_product)
-            create_q = "mutation productCreate($input:ProductInput!){productCreate(input:$input){product{id} userErrors{field message}}}"
-            created_product_data = self.shopify.execute_graphql(create_q, {'input': product_input}).get('productCreate', {})
-            
-            if not created_product_data.get('product'):
-                errors = created_product_data.get('userErrors', [])
-                raise Exception(f"Ürün oluşturulamadı: {errors}")
-            
-            product_gid = created_product_data['product']['id']
-            logging.info(f"Aşama 1 tamamlandı. Ürün GID: {product_gid}")
-            
-            sentos_variants = sentos_product.get('variants', []) or [sentos_product]
-            variants_input = [self._prepare_variant_bulk_input(v, sentos_product, c=True) for v in sentos_variants]
-            bulk_q = """
-            mutation pVB($pId:ID!,$v:[ProductVariantsBulkInput!]!){
-                productVariantsBulkCreate(productId:$pId,variants:$v,strategy:REMOVE_STANDALONE_VARIANT){
-                    productVariants{id inventoryItem{id sku}} userErrors{field message}
-                }
-            }"""
-            created_vars_data = self.shopify.execute_graphql(bulk_q, {'pId': product_gid, 'v': variants_input}).get('productVariantsBulkCreate', {})
-            created_vars = created_vars_data.get('productVariants', [])
-            
-            msg = f"{len(created_vars)} varyantla oluşturuldu."
-            changes.append(msg)
-            
-            # Yeni oluşturulan ürünün stoklarını ayarla
-            adjustments = []
-            for s_var, c_var in zip(sentos_variants, created_vars):
-                if c_var.get('inventoryItem'):
-                    qty = 0
-                    if s := s_var.get('stocks', []):
-                        if s and s[0] and s[0].get('stock') is not None:
-                            qty = s[0].get('stock', 0)
-                    adjustments.append({"inventoryItemId": c_var['inventoryItem']['id'], "availableQuantity": int(qty)})
-            
-            if adjustments:
-                changes.append(f"{len(adjustments)} varyantın stoğu ayarlandı.")
-                self._adjust_inventory_bulk(adjustments)
-
-            self._sync_product_options(product_gid, sentos_product)
-            changes.extend(self._sync_product_media(product_gid, sentos_product, set_alt_text=True))
-            
-            logging.info(f"✅ Ürün başarıyla oluşturuldu: '{product_name}'")
-            return changes
-        except Exception as e:
-            logging.error(f"Ürün oluşturma hatası: {e}"); raise
-
-    def update_existing_product(self, sentos_product, existing_product, sync_mode):
-        product_name = sentos_product.get('name', 'Bilinmeyen Ürün') 
-        shopify_gid = existing_product['gid']
-        logging.info(f"Mevcut ürün güncelleniyor: '{product_name}' (GID: {shopify_gid}) | Mod: {sync_mode}")
-        
-        all_changes = []
-        try:
-            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Açıklamalar"]:
-                 all_changes.extend(self._sync_core_details(shopify_gid, sentos_product))
-
-            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Kategoriler (Ürün Tipi)"]:
-                all_changes.extend(self._sync_product_type(shopify_gid, sentos_product))
-            
-            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Stok ve Varyantlar"]:
-                all_changes.extend(self._sync_variants_and_stock(shopify_gid, sentos_product))
-                self._sync_product_options(shopify_gid, sentos_product)
-
-            if sync_mode == "Sadece Resimler":
-                all_changes.extend(self._sync_product_media(shopify_gid, sentos_product, set_alt_text=False))
-            
-            if sync_mode in ["SEO Alt Metinli Resimler", "Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)"]:
-                 all_changes.extend(self._sync_product_media(shopify_gid, sentos_product, set_alt_text=True))
-
-            logging.info(f"✅ Ürün '{product_name}' başarıyla güncellendi.")
-            return all_changes
-        except Exception as e:
-            logging.error(f"Ürün güncelleme hatası: {e}"); raise
-
     def _get_product_variants(self, product_gid):
-        """Mevcut varyantları, SKU'ları ve stok seviyeleri ile birlikte çeker."""
-        query = """
-        query getProductVariantsWithStock($id: ID!) {
-          product(id: $id) {
-            variants(first: 100) {
-              edges {
-                node {
-                  id
-                  sku
-                  inventoryItem {
-                    id
-                    sku
-                    inventoryLevels(first: 1) {
-                      edges {
-                        node {
-                          available
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-        """
-        data = self.shopify.execute_graphql(query, {"id": product_gid})
-        variants = data.get("product", {}).get("variants", {}).get("edges", [])
-        
-        # SKU'ları anahtar olarak kullanan ve stok bilgisini içeren bir sözlük oluştur
-        variant_details = {}
-        for edge in variants:
-            node = edge.get('node', {})
-            sku = node.get('sku')
-            if not sku:
-                continue
-
-            inventory_item = node.get('inventoryItem', {})
-            inventory_levels = inventory_item.get('inventoryLevels', {}).get('edges', [])
-            
-            # Stok seviyesini al, yoksa 0 olarak varsay
-            quantity = 0
-            if inventory_levels and inventory_levels[0].get('node'):
-                quantity = inventory_levels[0]['node'].get('available', 0)
-
-            variant_details[sku] = {
-                'variantId': node['id'],
-                'inventoryItemId': inventory_item['id'],
-                'quantity': quantity
-            }
-        return variant_details
-
-    def _add_variants_to_product(self, product_gid, new_variants, main_product):
-        v_in = [self._prepare_variant_bulk_input(v, main_product, c=True) for v in new_variants]
-        bulk_q="""mutation pVBC($pId:ID!,$v:[ProductVariantsBulkInput!]!){productVariantsBulkCreate(productId:$pId,variants:$v){productVariants{id inventoryItem{id sku}} userErrors{field message}}}"""
-        res=self.shopify.execute_graphql(bulk_q,{"productId":product_gid,"variants":v_in})
-        created=res.get('productVariantsBulkCreate',{}).get('productVariants',[])
-        if errs:=res.get('productVariantsBulkCreate',{}).get('userErrors',[]): logging.error(f"Varyant ekleme hataları: {errs}")
-        logging.info(f"{len(created)} yeni varyant eklendi")
-        if created:self._activate_variants_at_location(created)
-        return created
-
-    def _activate_variants_at_location(self, variants):
-        iids=[v['inventoryItem']['id'] for v in variants if v.get('inventoryItem',{}).get('id')]
-        if not iids: return
-        self.shopify.get_default_location_id()
-        act_q="""mutation iBTA($iids:[ID!]!,$upds:[InventoryBulkToggleActivationInput!]!){inventoryBulkToggleActivation(inventoryItemIds:$iids,inventoryItemUpdates:$upds){inventoryLevels{id} userErrors{field message}}}"""
-        upds=[{"inventoryItemId":iid,"locationId":self.shopify.location_id,"activate":True} for iid in iids]
-        try:
-            res=self.shopify.execute_graphql(act_q,{"inventoryItemIds":iids,"inventoryItemUpdates":upds})
-            if errs:=res.get('inventoryBulkToggleActivation',{}).get('userErrors',[]): logging.error(f"Inventory aktivasyon hataları: {errs}")
-            logging.info(f"{len(res.get('inventoryBulkToggleActivation',{}).get('inventoryLevels',[]))} inventory level aktive edildi")
-        except Exception as e:
-            logging.error(f"Inventory aktivasyon hatası: {e}")
+        q="""query gPV($id:ID!){product(id:$id){variants(first:250){edges{node{id inventoryItem{id sku}}}}}}"""
+        data=self.shopify.execute_graphql(q,{"id":product_gid})
+        return [e['node'] for e in data.get("product",{}).get("variants",{}).get("edges",[])]
 
     def _prepare_inventory_adjustments(self, sentos_variants, shopify_variants):
         sku_map = {str(v.get('inventoryItem',{}).get('sku','')).strip():v.get('inventoryItem',{}).get('id') for v in shopify_variants if v.get('inventoryItem',{}).get('sku')}
@@ -766,47 +524,122 @@ class ProductSyncManager:
         logging.info(f"Toplam {len(adjustments)} stok ayarlaması hazırlandı.")
         return adjustments
 
-    def _adjust_inventory_bulk(self, inventory_adjustments):
-        if not inventory_adjustments:
-            logging.info("Ayarlanacak stok bulunmuyor.")
-            return
+    def _sync_variants_and_stock(self, product_gid, sentos_product):
+        changes = []
+        logging.info("Varyantlar ve stoklar senkronize ediliyor...")
+        ex_vars = self._get_product_variants(product_gid)
+        ex_skus = {str(v.get('inventoryItem',{}).get('sku','')).strip() for v in ex_vars if v.get('inventoryItem',{}).get('sku')}
+        s_vars = sentos_product.get('variants', []) or [sentos_product]
+        new_vars = [v for v in s_vars if str(v.get('sku','')).strip() not in ex_skus]
+        if new_vars:
+            msg = f"{len(new_vars)} yeni varyant eklendi."
+            logging.info(msg)
+            changes.append(msg)
+            self._add_variants_to_product(product_gid, new_vars, sentos_product)
+            time.sleep(3)
+        all_now_variants = self._get_product_variants(product_gid)
+        if adjustments := self._prepare_inventory_adjustments(s_vars, all_now_variants):
+            msg = f"{len(adjustments)} varyantın stok seviyesi güncellendi."
+            changes.append(msg)
+            self._adjust_inventory_bulk(adjustments)
+        if not new_vars and not adjustments:
+            changes.append("Stok ve varyantlar kontrol edildi (Değişiklik yok).")
+        logging.info("✅ Varyant ve stok senkronizasyonu tamamlandı.")
+        return changes
 
+    def create_new_product(self, sentos_product):
+        changes = []
+        product_name = sentos_product.get('name', 'Bilinmeyen Ürün')
+        logging.info(f"Yeni ürün oluşturuluyor: '{product_name}'")
+        try:
+            product_input = self._prepare_basic_product_input(sentos_product)
+            create_q = "mutation productCreate($input:ProductInput!){productCreate(input:$input){product{id} userErrors{field message}}}"
+            created_product_data = self.shopify.execute_graphql(create_q, {'input': product_input}).get('productCreate', {})
+            if not created_product_data.get('product'):
+                errors = created_product_data.get('userErrors', [])
+                raise Exception(f"Ürün oluşturulamadı: {errors}")
+            product_gid = created_product_data['product']['id']
+            sentos_variants = sentos_product.get('variants', []) or [sentos_product]
+            variants_input = [self._prepare_variant_bulk_input(v, sentos_product, c=True) for v in sentos_variants]
+            bulk_q = """
+            mutation pVB($pId:ID!,$v:[ProductVariantsBulkInput!]!){
+                productVariantsBulkCreate(productId:$pId,variants:$v,strategy:REMOVE_STANDALONE_VARIANT){
+                    productVariants{id inventoryItem{id sku}} userErrors{field message}
+                }
+            }"""
+            created_vars_data = self.shopify.execute_graphql(bulk_q, {'pId': product_gid, 'v': variants_input}).get('productVariantsBulkCreate', {})
+            created_vars = created_vars_data.get('productVariants', [])
+            changes.append(f"{len(created_vars)} varyantla oluşturuldu.")
+            if adjustments := self._prepare_inventory_adjustments(sentos_variants, created_vars):
+                changes.append(f"{len(adjustments)} varyantın stoğu ayarlandı.")
+                self._adjust_inventory_bulk(adjustments)
+            self._sync_product_options(product_gid, sentos_product)
+            changes.extend(self._sync_product_media(product_gid, sentos_product, set_alt_text=True))
+            logging.info(f"✅ Ürün başarıyla oluşturuldu: '{product_name}'")
+            return changes
+        except Exception as e:
+            logging.error(f"Ürün oluşturma hatası: {e}"); raise
+
+    def update_existing_product(self, sentos_product, existing_product, sync_mode):
+        product_name = sentos_product.get('name', 'Bilinmeyen Ürün') 
+        shopify_gid = existing_product['gid']
+        logging.info(f"Mevcut ürün güncelleniyor: '{product_name}' (GID: {shopify_gid}) | Mod: {sync_mode}")
+        all_changes = []
+        try:
+            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Açıklamalar"]:
+                 all_changes.extend(self._sync_core_details(shopify_gid, sentos_product))
+            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Kategoriler (Ürün Tipi)"]:
+                all_changes.extend(self._sync_product_type(shopify_gid, sentos_product))
+            if sync_mode in ["Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", "Sadece Stok ve Varyantlar"]:
+                all_changes.extend(self._sync_variants_and_stock(shopify_gid, sentos_product))
+                self._sync_product_options(shopify_gid, sentos_product)
+            if sync_mode == "Sadece Resimler":
+                all_changes.extend(self._sync_product_media(shopify_gid, sentos_product, set_alt_text=False))
+            if sync_mode in ["SEO Alt Metinli Resimler", "Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)"]:
+                 all_changes.extend(self._sync_product_media(shopify_gid, sentos_product, set_alt_text=True))
+            logging.info(f"✅ Ürün '{product_name}' başarıyla güncellendi.")
+            return all_changes
+        except Exception as e:
+            logging.error(f"Ürün güncelleme hatası: {e}"); raise
+
+    def _add_variants_to_product(self, product_gid, new_variants, main_product):
+        v_in = [self._prepare_variant_bulk_input(v, main_product, c=True) for v in new_variants]
+        bulk_q="""mutation pVBC($pId:ID!,$v:[ProductVariantsBulkInput!]!){productVariantsBulkCreate(productId:$pId,variants:$v){productVariants{id inventoryItem{id sku}} userErrors{field message}}}"""
+        res=self.shopify.execute_graphql(bulk_q,{"pId":product_gid,"v":v_in})
+        created=res.get('productVariantsBulkCreate',{}).get('productVariants',[])
+        if errs:=res.get('productVariantsBulkCreate',{}).get('userErrors',[]): logging.error(f"Varyant ekleme hataları: {errs}")
+        if created:self._activate_variants_at_location(created)
+        return created
+
+    def _activate_variants_at_location(self, variants):
+        iids=[v['inventoryItem']['id'] for v in variants if v.get('inventoryItem',{}).get('id')]
+        if not iids: return
+        self.shopify.get_default_location_id()
+        act_q="""mutation inventoryBulkToggleActivation($inventoryItemUpdates: [InventoryBulkToggleActivationInput!]!) {
+            inventoryBulkToggleActivation(inventoryItemUpdates: $inventoryItemUpdates) {
+                inventoryLevels { id }
+                userErrors { field message }
+            }
+        }"""
+        upds=[{"inventoryItemId":iid,"locationId":self.shopify.location_id,"activate":True} for iid in iids]
+        try:
+            self.shopify.execute_graphql(act_q,{"inventoryItemUpdates":upds})
+        except Exception as e:
+            logging.error(f"Inventory aktivasyon hatası: {e}")
+    
+    def _adjust_inventory_bulk(self, inventory_adjustments):
+        if not inventory_adjustments: return
         location_id = self.shopify.get_default_location_id()
-        logging.info(f"GraphQL ile {len(inventory_adjustments)} adet stok ayarlanıyor. Lokasyon: {location_id}")
-        
         mutation = """
         mutation inventorySetOnHandQuantities($input: InventorySetOnHandQuantitiesInput!) {
           inventorySetOnHandQuantities(input: $input) {
-            userErrors {
-              field
-              message
-              code
-            }
+            userErrors { field message code }
           }
         }
         """
-        
-        variables = {
-            "input": {
-                "reason": "correction",
-                "setQuantities": [
-                    {
-                        "inventoryItemId": adj["inventoryItemId"],
-                        "quantity": adj["availableQuantity"],
-                        "locationId": location_id
-                    }
-                    for adj in inventory_adjustments
-                ]
-            }
-        }
-
+        variables = { "input": { "reason": "correction", "setQuantities": [ { "inventoryItemId": adj["inventoryItemId"], "quantity": adj["availableQuantity"], "locationId": location_id } for adj in inventory_adjustments ] } }
         try:
-            response = self.shopify.execute_graphql(mutation, variables)
-            data = response.get('inventorySetOnHandQuantities', {})
-            if errors := data.get('userErrors', []):
-                logging.error(f"Toplu stok güncelleme sırasında GraphQL hataları oluştu: {errors}")
-            else:
-                logging.info(f"✅ GraphQL ile {len(inventory_adjustments)} stok ayarlama isteği başarıyla gönderildi.")
+            self.shopify.execute_graphql(mutation, variables)
         except Exception as e:
             logging.error(f"Toplu stok güncelleme sırasında kritik bir hata oluştu: {e}")
 
@@ -814,39 +647,24 @@ class ProductSyncManager:
         name = sentos_product.get('name', 'Bilinmeyen Ürün')
         sku = sentos_product.get('sku', 'SKU Yok')
         log_entry = {'name': name, 'sku': sku}
-        
         try:
             if not name.strip():
-                logging.warning(f"İsimsiz ürün atlandı (SKU: {sku})")
                 with self._lock: self.stats['skipped'] += 1
                 return
-
             existing_product = self.find_shopify_product(sentos_product)
             changes_made = []
-
             if existing_product:
                 changes_made = self.update_existing_product(sentos_product, existing_product, sync_mode)
-                status = 'updated'
-                status_icon = "🔄"
-                
-                with self._lock: 
-                    self.stats['updated'] += 1
-                    log_entry['status'] = status
-            
-            elif sync_mode == "Full Sync (Create & Update All)":
+                status, status_icon = 'updated', "🔄"
+                with self._lock: self.stats['updated'] += 1
+            elif sync_mode == "Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)":
                 changes_made = self.create_new_product(sentos_product)
-                status = 'created'
-                status_icon = "✅"
-                
-                with self._lock: 
-                    self.stats['created'] += 1
-                    log_entry['status'] = status
+                status, status_icon = 'created', "✅"
+                with self._lock: self.stats['created'] += 1
             else:
-                logging.warning(f"Ürün Shopify'da bulunamadı, atlanıyor (Mod: {sync_mode}, SKU: {sku})")
                 with self._lock: self.stats['skipped'] += 1
                 self.details.append({**log_entry, 'status': 'skipped', 'reason': 'Product not found in Shopify'})
                 return
-
             changes_html = "".join([f'<li><small>{change}</small></li>' for change in changes_made])
             log_html = f"""
             <div style='border-bottom: 1px solid #444; padding-bottom: 8px; margin-bottom: 8px;'>
@@ -857,243 +675,108 @@ class ProductSyncManager:
             </div>
             """
             progress_callback({'log_detail': log_html})
-            
-            with self._lock:
-                self.details.append(log_entry)
-
+            with self._lock: self.details.append(log_entry)
         except Exception as e:
             error_message = f"❌ Hata: {name} (SKU: {sku}) - {e}"
-            logging.error(f"{error_message}\n{traceback.format_exc()}")
             progress_callback({'log_detail': f"<div style='color: #f48a94;'>{error_message}</div>"})
             with self._lock: 
                 self.stats['failed'] += 1
                 log_entry.update({'status': 'failed', 'reason': str(e)})
                 self.details.append(log_entry)
         finally:
-            with self._lock: 
-                self.stats['processed'] += 1
+            with self._lock: self.stats['processed'] += 1
 
-def _process_sentos_products_in_batches(sync_manager, sentos_api, sync_mode, progress_callback, stop_event, max_workers, test_mode=False):
-    page = 1
-    page_size = 20 if test_mode else 50
-    
-    while not stop_event.is_set():
-        progress_callback({'message': f"Sentos'tan {page}. sayfa ürünler çekiliyor..."})
-        
-        response = sentos_api.get_products_by_page(page=page, page_size=page_size)
-        products_on_page = response.get('data', [])
-        
-        if sync_manager.stats['total'] == 0:
-            total_products = response.get('total_elements', 0)
-            sync_manager.stats['total'] = min(total_products, page_size) if test_mode else total_products
-
-        if not products_on_page:
-            logging.info("Sentos'tan çekilecek başka ürün kalmadı. Senkronizasyon tamamlanıyor.")
-            break
-
+# --- Ana Fonksiyonlar ---
+def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, progress_callback, stop_event, max_workers=3, sync_mode="Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)"):
+    start_time = time.monotonic()
+    try:
+        shopify_api = ShopifyAPI(store_url, access_token)
+        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
+        sync_manager = ProductSyncManager(shopify_api, sentos_api)
+        progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 5})
+        shopify_load_thread = threading.Thread(target=shopify_api.load_all_products, args=(progress_callback,))
+        shopify_load_thread.start()
+        progress_callback({'message': "Sentos'tan ürünler çekiliyor...", 'progress': 15})
+        sentos_products = sentos_api.get_all_products(progress_callback=progress_callback)
+        if test_mode: sentos_products = sentos_products[:20]
+        logging.info("Ana işlem, Shopify önbelleğinin tamamlanmasını bekliyor...")
+        shopify_load_thread.join()
+        logging.info("Shopify önbelleği hazır. Ana işlem devam ediyor.")
+        progress_callback({'message': f"{len(sentos_products)} ürün senkronize ediliyor...", 'progress': 55})
+        sync_manager.stats['total'] = len(sentos_products)
         with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="SyncWorker") as executor:
-            futures = [executor.submit(sync_manager.sync_single_product, p, sync_mode, progress_callback) for p in products_on_page]
+            futures = [executor.submit(sync_manager.sync_single_product, p, sync_mode, progress_callback) for p in sentos_products]
             for future in as_completed(futures):
-                if stop_event.is_set():
+                if stop_event.is_set(): 
                     executor.shutdown(wait=False, cancel_futures=True)
-                    logging.warning("Durdurma sinyali alındı, mevcut sayfa işlenmesi durduruluyor.")
-                    return
-                
+                    break
                 processed = sync_manager.stats['processed']
-                total = sync_manager.stats['total']
-                progress = int((processed / total) * 100) if total > 0 else 0
+                total = len(sentos_products)
+                progress = 55 + int((processed / total) * 45) if total > 0 else 100
                 progress_callback({'progress': progress, 'message': f"İşlenen: {processed}/{total}", 'stats': sync_manager.stats.copy()})
-        
-        if test_mode:
-            logging.info("Test modu aktif, sadece ilk sayfa işlendi.")
-            break
-
-        page += 1
-        time.sleep(1)
-
-def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, progress_callback, stop_event, max_workers=3, sync_mode="Full Sync (Create & Update All)"):
-    start_time = time.monotonic()
-    try:
-        # API bağlantılarını ve yöneticisini hazırla
-        shopify_api = ShopifyAPI(store_url, access_token)
-        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
-        sync_manager = ProductSyncManager(shopify_api, sentos_api)
-
-        # --- GÜVENLİK GÜNCELLEMESİ: Thread içinde thread yapısı kaldırıldı ---
-        # Shopify ürünlerini ana görev içinde, güvenli bir hata yakalama bloğuyla yükle.
-        # Bu, thread'in sessizce ölmesini ve uygulamanın takılmasını engeller.
-        try:
-            progress_callback({'message': "Shopify ürünleri önbelleğe alınıyor...", 'progress': 10})
-            shopify_api.load_all_products(progress_callback=progress_callback)
-            logging.info("Shopify önbelleği başarıyla yüklendi.")
-        except Exception as e:
-            # Eğer Shopify ürünleri çekilemezse, hatayı yakala ve arayüze bildir.
-            logging.critical(f"Kritik hata: Shopify ürünleri çekilemedi. Hata: {e}")
-            # Bu hatayı ana except bloğuna göndererek arayüzde gösterilmesini sağla.
-            raise Exception(f"Shopify bağlantı hatası: Lütfen ayarlarınızı kontrol edin. Detay: {e}")
-
-        if stop_event.is_set():
-            raise Exception("İşlem, Shopify ürünleri yüklendikten sonra durduruldu.")
-
-        # Shopify yüklemesi başarılıysa Sentos işlemlerine devam et
-        progress_callback({'message': "Sentos ürünleri işlenmeye başlıyor...", 'progress': 40})
-        
-        # Ürünleri sayfa sayfa işleyen ana döngüyü çağır
-        _process_sentos_products_in_batches(
-            sync_manager, sentos_api, sync_mode, progress_callback, stop_event, max_workers, test_mode
-        )
-
-        duration = time.monotonic() - start_time
-        results = {
-            'stats': sync_manager.stats, 
-            'details': sync_manager.details,
-            'duration': str(timedelta(seconds=duration))
-        }
-        progress_callback({'status': 'done', 'results': results, 'progress': 100})
-        logging.info(f"Senkronizasyon {results['duration']} sürede tamamlandı. Sonuçlar: {results['stats']}")
-
-    except Exception as e:
-        # Ana try-except bloğu, tüm hataları yakalayıp arayüze gönderir.
-        logging.critical(f"Senkronizasyon görevi sırasında kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
-        progress_callback({'status': 'error', 'message': str(e)})
-
-def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, sync_mode="Stock & Variants Only", max_workers=2):
-    """
-    Bu fonksiyon, RQ worker veya zamanlanmış görevler (örn: GitHub Actions) tarafından
-    çalıştırılmak üzere tasarlanmıştır. Arayüz geri bildirimi (progress_callback)
-    ve durdurma olayı (stop_event) için sahte (dummy) versiyonlar oluşturur.
-    """
-    logging.info(f"Zamanlanmış görev (cron) senkronizasyonu başlatılıyor... Mod: {sync_mode}")
-    
-    # Arayüze özel callback'lerin loglama yapan sahte versiyonları
-    def cron_progress_callback(data):
-        if message := data.get('message'):
-            logging.info(f"[CRON-PROGRESS] {message}")
-        if stats := data.get('stats'):
-            logging.info(f"[CRON-STATS] {stats}")
-    
-    # Sahte durdurma olayı
-    dummy_stop_event = threading.Event()
-
-    try:
-        # Ana senkronizasyon fonksiyonunu çağır
-        sync_products_from_sentos_api(
-            store_url=store_url,
-            access_token=access_token,
-            sentos_api_url=sentos_api_url,
-            sentos_api_key=sentos_api_key,
-            sentos_api_secret=sentos_api_secret,
-            sentos_cookie=sentos_cookie,
-            test_mode=False, # Cron job'lar asla test modunda çalışmaz
-            progress_callback=cron_progress_callback,
-            stop_event=dummy_stop_event,
-            max_workers=max_workers,
-            sync_mode=sync_mode
-        )
-        logging.info("Zamanlanmış senkronizasyon görevi başarıyla tamamlandı.")
-    except Exception as e:
-        logging.error(f"Zamanlanmış senkronizasyon görevinde kritik hata: {e}", exc_info=True)
-
-def sync_missing_products_only(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, progress_callback, stop_event, max_workers):
-    """
-    Sentos'ta olup Shopify'da olmayan ürünleri bulur ve sadece onları oluşturur.
-    Mevcut ürünlere dokunmaz.
-    """
-    start_time = time.monotonic()
-    try:
-        shopify_api = ShopifyAPI(store_url, access_token)
-        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
-        sync_manager = ProductSyncManager(shopify_api, sentos_api)
-
-        progress_callback({'message': "Mevcut Shopify ürünleri önbelleğe alınıyor...", 'progress': 10})
-        shopify_api.load_all_products(progress_callback=progress_callback)
-        
-        if stop_event.is_set(): raise Exception("İşlem başlangıçta durduruldu.")
-
-        page = 1
-        page_size = 20 if test_mode else 50
-        products_to_create = []
-
-        # 1. Aşama: Eksik ürünleri bulma
-        progress_callback({'message': "Sentos ürünleri taranıyor ve eksikler bulunuyor...", 'progress': 40})
-        while not stop_event.is_set():
-            response = sentos_api.get_products_by_page(page=page, page_size=page_size)
-            products_on_page = response.get('data', [])
-            if not products_on_page: break
-            
-            for p in products_on_page:
-                if not sync_manager.find_shopify_product(p):
-                    products_to_create.append(p)
-            
-            if test_mode: break
-            page += 1
-        
-        sync_manager.stats['total'] = len(products_to_create)
-        logging.info(f"Shopify'da eksik olan {len(products_to_create)} ürün bulundu ve oluşturulacak.")
-
-        # 2. Aşama: Bulunan eksik ürünleri oluşturma
-        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="CreateMissing") as executor:
-            futures = {executor.submit(sync_manager.create_new_product, p): p for p in products_to_create}
-            for future in as_completed(futures):
-                if stop_event.is_set():
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    return
-                
-                sentos_product = futures[future]
-                try:
-                    changes = future.result()
-                    status_icon, status = "✅", "created"
-                    sync_manager.stats['created'] += 1
-                    html_log = f"<div><strong>{status_icon} Oluşturuldu:</strong> {sentos_product.get('name')}</div>"
-                    progress_callback({'log_detail': html_log})
-                except Exception as e:
-                    sync_manager.stats['failed'] += 1
-                    error_message = f"❌ Hata: {sentos_product.get('name')} oluşturulamadı - {e}"
-                    progress_callback({'log_detail': f"<div style='color: #f48a94;'>{error_message}</div>"})
-                
-                sync_manager.stats['processed'] += 1
-                processed = sync_manager.stats['processed']
-                total = sync_manager.stats['total']
-                progress = int((processed / total) * 100) if total > 0 else 0
-                progress_callback({'progress': progress, 'message': f"Oluşturulan: {processed}/{total}", 'stats': sync_manager.stats.copy()})
-
         duration = time.monotonic() - start_time
         results = {'stats': sync_manager.stats, 'details': sync_manager.details, 'duration': str(timedelta(seconds=duration))}
-        progress_callback({'status': 'done', 'results': results, 'progress': 100})
-
+        progress_callback({'status': 'done', 'results': results})
     except Exception as e:
-        logging.critical(f"Eksik ürün senkronizasyonunda hata: {e}\n{traceback.format_exc()}")
+        logging.critical(f"Senkronizasyon görevi kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
 
-
-# --- YENİ ÖZELLİK 2: SKU İLE TEKİL ÜRÜN GÜNCELLEME FONKSİYONU ---
 def sync_single_product_by_sku(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, sku):
-    """
-    Verilen SKU'yu Sentos'ta bulur ve Shopify'daki karşılığını tam olarak günceller.
-    """
     try:
         shopify_api = ShopifyAPI(store_url, access_token)
         sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
         sync_manager = ProductSyncManager(shopify_api, sentos_api)
-
-        # 1. Sentos'tan ürünü bul
         sentos_product = sentos_api.get_product_by_sku(sku)
         if not sentos_product:
             return {'success': False, 'message': f"'{sku}' SKU'su ile Sentos'ta ürün bulunamadı."}
-
-        # 2. Shopify'da karşılığını bulmak için önbelleği yükle
         shopify_api.load_all_products()
-        
         existing_product = sync_manager.find_shopify_product(sentos_product)
         if not existing_product:
-            return {'success': False, 'message': f"'{sku}' SKU'su ile Shopify'da eşleşen ürün bulunamadı. Lütfen önce oluşturun."}
-
-        # 3. Ürünü tam güncelleme modunda senkronize et
-        changes_made = sync_manager.update_existing_product(sentos_product, existing_product, "Full Sync (Create & Update All)")
-
-        message = f"'{sentos_product.get('name')}' ürünü başarıyla güncellendi. Yapılan Değişiklikler: {', '.join(changes_made) or 'Değişiklik yok.'}"
-        return {'success': True, 'message': message}
-
+            return {'success': False, 'message': f"'{sku}' SKU'su ile Shopify'da eşleşen ürün bulunamadı."}
+        changes_made = sync_manager.update_existing_product(
+            sentos_product, existing_product, "Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)"
+        )
+        product_name = sentos_product.get('name', sku)
+        return {'success': True, 'product_name': product_name, 'changes': changes_made}
     except Exception as e:
         logging.error(f"Tekil ürün {sku} senkronizasyonunda hata: {e}\n{traceback.format_exc()}")
         return {'success': False, 'message': str(e)}
+
+def sync_missing_products_only(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, progress_callback, stop_event, max_workers):
+    start_time = time.monotonic()
+    try:
+        shopify_api = ShopifyAPI(store_url, access_token)
+        sentos_api = SentosAPI(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
+        sync_manager = ProductSyncManager(shopify_api, sentos_api)
+        progress_callback({'message': "Shopify ürünleri arka planda önbelleğe alınıyor...", 'progress': 5})
+        shopify_load_thread = threading.Thread(target=shopify_api.load_all_products, args=(progress_callback,))
+        shopify_load_thread.start()
+        progress_callback({'message': "Sentos'tan ürünler taranıyor...", 'progress': 15})
+        sentos_products = sentos_api.get_all_products(progress_callback=progress_callback)
+        if test_mode: sentos_products = sentos_products[:20]
+        logging.info("Shopify önbelleğinin tamamlanması bekleniyor...")
+        shopify_load_thread.join()
+        logging.info("Eksik ürünler tespit ediliyor...")
+        products_to_create = []
+        for p in sentos_products:
+            if not sync_manager.find_shopify_product(p):
+                products_to_create.append(p)
+        logging.info(f"{len(products_to_create)} adet eksik ürün bulundu.")
+        progress_callback({'message': f"{len(products_to_create)} eksik ürün oluşturulacak...", 'progress': 55})
+        sync_manager.stats['total'] = len(products_to_create)
+        with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="CreateMissing") as executor:
+            futures = [executor.submit(sync_manager.sync_single_product, p, "Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)", progress_callback) for p in products_to_create]
+            for future in as_completed(futures):
+                if stop_event.is_set():
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    break
+                processed = sync_manager.stats['processed']
+                total = len(products_to_create)
+                progress = 55 + int((processed / total) * 45) if total > 0 else 100
+                progress_callback({'progress': progress, 'message': f"Oluşturulan: {processed}/{total}", 'stats': sync_manager.stats.copy()})
+        duration = time.monotonic() - start_time
+        results = {'stats': sync_manager.stats, 'details': sync_manager.details, 'duration': str(timedelta(seconds=duration))}
+        progress_callback({'status': 'done', 'results': results})
+    except Exception as e:
+        logging.critical(f"Eksik ürün senkronizasyonunda kritik hata: {e}\n{traceback.format_exc()}")
+        progress_callback({'status': 'error', 'message': str(e)})

@@ -13,7 +13,7 @@ from shopify_sync import (
     sync_missing_products_only, 
     sync_single_product_by_sku
 )
-from log_manager import save_log
+# from log_manager import save_log # Henüz log kaydetme eklenmedi
 
 # --- Session State Başlatma ---
 if 'sync_running' not in st.session_state:
@@ -35,7 +35,7 @@ if 'live_log_missing' not in st.session_state:
     st.session_state.live_log_missing = []
 
 if 'stop_sync_event' not in st.session_state:
-    st.session_state.stop_sync_event = None
+    st.session_state.stop_sync_event = threading.Event()
 if 'progress_queue' not in st.session_state:
     st.session_state.progress_queue = queue.Queue()
 
@@ -58,7 +58,7 @@ sync_ready = (st.session_state.get('shopify_status') == 'connected' and
 
 is_any_sync_running = st.session_state.sync_running or st.session_state.sync_missing_running
 
-# --- Ortak İlerleme ve Sonuç Gösterim Fonksiyonları (Türkçeleştirildi) ---
+# --- Ortak İlerleme ve Sonuç Gösterim Fonksiyonları ---
 def display_progress(title, results_key, log_key):
     st.subheader(title)
     if st.button("🛑 Mevcut Görevi Durdur", use_container_width=True, key=f"stop_{results_key}"):
@@ -230,7 +230,7 @@ else:
             st.rerun()
 
     st.markdown("---")
-    with st.expander("✨ Özellik: SKU ile Tekil Ürün Güncelle"):
+    with st.expander("✨ Özellik: SKU ile Tekil Ürün Güncelle", expanded=True):
         st.info("Sentos'taki bir ürünün model kodunu (SKU) girerek Shopify'daki karşılığını anında ve tam olarak güncelleyebilirsiniz.")
         sku_to_sync = st.text_input("Model Kodu (SKU)", placeholder="Örn: V-123-ABC")
         
@@ -246,6 +246,19 @@ else:
                         sku=sku_to_sync
                     )
                 if result.get('success'):
-                    st.success(f"✅ Başarılı: {result.get('message')}")
+                    product_name = result.get('product_name', sku_to_sync)
+                    changes = result.get('changes', [])
+                    
+                    st.success(f"✅ '{product_name}' ürünü başarıyla güncellendi.")
+                    
+                    if changes:
+                        st.markdown("**Yapılan Kontroller ve İşlemler:**")
+                        change_log = ""
+                        for change in changes:
+                            change_log += f"- {change}\n"
+                        st.info(change_log)
+                    else:
+                        st.info("Sistem herhangi bir işlem raporlamadı.")
+
                 else:
                     st.error(f"❌ Hata: {result.get('message')}")
