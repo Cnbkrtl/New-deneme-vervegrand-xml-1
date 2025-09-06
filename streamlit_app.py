@@ -1,4 +1,4 @@
-# streamlit_app.py (Nihai Sürüm)
+# streamlit_app.py (Nihai Sürüm - Query Params ile)
 
 import streamlit as st
 import yaml
@@ -16,7 +16,6 @@ from shopify_sync import ShopifyAPI, SentosAPI
 st.set_page_config(page_title="Vervegrand Sync", page_icon="🔄", layout="wide", initial_sidebar_state="expanded")
 
 def initialize_session_state_defaults():
-    """Oturum durumu için başlangıç değerlerini ayarlar."""
     defaults = {
         'authentication_status': None,
         'shopify_status': 'pending', 'sentos_status': 'pending',
@@ -24,33 +23,22 @@ def initialize_session_state_defaults():
         'price_df': None, 'calculated_df': None
     }
     for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
+        if key not in st.session_state: st.session_state[key] = value
 
 def load_and_verify_user_data(username):
-    """Kullanıcıya özel sırları ve verileri yükler."""
-    if st.session_state.get('user_data_loaded_for') == username:
-        return # Veriler zaten bu kullanıcı için yüklü
-
-    # API anahtarlarını Streamlit Secrets'tan yükle
+    if st.session_state.get('user_data_loaded_for') == username: return
     user_keys = load_all_user_keys(username)
     st.session_state.update(user_keys)
-    
-    # Kalıcı fiyat verilerini data_manager'dan yükle
     user_price_data = load_user_data(username)
     try:
         price_df_json = user_price_data.get('price_df_json')
-        if price_df_json:
-            st.session_state.price_df = pd.read_json(StringIO(price_df_json), orient='split')
-
+        if price_df_json: st.session_state.price_df = pd.read_json(StringIO(price_df_json), orient='split')
         calculated_df_json = user_price_data.get('calculated_df_json')
-        if calculated_df_json:
-            st.session_state.calculated_df = pd.read_json(StringIO(calculated_df_json), orient='split')
-    except Exception as e:
+        if calculated_df_json: st.session_state.calculated_df = pd.read_json(StringIO(calculated_df_json), orient='split')
+    except Exception:
         st.session_state.price_df = None
         st.session_state.calculated_df = None
 
-    # Bağlantıları test et
     if st.session_state.get('shopify_store') and st.session_state.get('shopify_token'):
         try:
             api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
@@ -64,33 +52,54 @@ def load_and_verify_user_data(username):
             st.session_state.sentos_data = api.test_connection()
             st.session_state.sentos_status = 'connected' if st.session_state.sentos_data.get('success') else 'failed'
         except: st.session_state.sentos_status = 'failed'
-
     st.session_state['user_data_loaded_for'] = username
 
-# --- Uygulama Başlangıcı ---
-with open('config.yaml') as file:
-    config = yaml.load(file, Loader=SafeLoader)
+# --- UYGULAMA BAŞLANGICI ---
+# URL'den session_id parametresini kontrol et
+if st.query_params.get('session_id') == "active":
+    # Eğer URL'de 'session_id=active' varsa, kullanıcıyı giriş yapmış say
+    if 'authentication_status' not in st.session_state or not st.session_state.authentication_status:
+        st.session_state.authentication_status = True
+        # Oturumun ilk kez bu yöntemle kurulduğunu belirtmek için session state'e ek bilgi koyabiliriz.
+        st.session_state.name = st.query_params.get('user', 'Kullanıcı') # URL'den kullanıcı adını al
+        st.session_state.username = st.query_params.get('username', '')
 
-authenticator = stauth.Authenticate(
-    config['credentials'],
-    config['cookie']['name'],
-    config['cookie']['key'],
-    config['cookie']['expiry_days']
-)
-
-authenticator.login()
-
+# --- Ana Logic ---
 if st.session_state.get("authentication_status"):
+    # Giriş yapılmışsa ana uygulamayı ve kenar çubuğunu göster
     load_and_verify_user_data(st.session_state.get("username"))
     with st.sidebar:
         st.title(f"Hoş geldiniz, *{st.session_state.get('name')}*!")
-        authenticator.logout(use_container_width=True)
-    # Ana sayfa içeriği veya yönlendirme burada olabilir
+        if st.button("Logout", use_container_width=True):
+            st.session_state.authentication_status = None
+            st.session_state.username = None
+            st.session_state.name = None
+            st.query_params.clear() # URL'den parametreleri temizle
+            st.rerun()
+
     st.info("👈 Lütfen başlamak için kenar çubuğundan bir sayfa seçin.")
 
-elif st.session_state.get("authentication_status") is False:
-    st.error('Kullanıcı adı/şifre hatalı')
+else:
+    # Giriş yapılmamışsa, authenticator ile giriş formunu göster
+    with open('config.yaml') as file:
+        config = yaml.load(file, Loader=SafeLoader)
 
-elif st.session_state.get("authentication_status") is None:
-    initialize_session_state_defaults()
-    st.warning('Lütfen kullanıcı adı ve şifrenizi girin')
+    authenticator = stauth.Authenticate(
+        config['credentials'],
+        config['cookie']['name'],
+        config['cookie']['key'],
+        config['cookie']['expiry_days'],
+    )
+    authenticator.login()
+
+    if st.session_state["authentication_status"]:
+        # Giriş başarılı olduğu anda, URL'yi parametrelerle güncelle ve sayfayı yeniden çalıştır
+        st.query_params.session_id = "active"
+        st.query_params.user = st.session_state.name
+        st.query_params.username = st.session_state.username
+        st.rerun()
+
+    elif st.session_state["authentication_status"] is False:
+        st.error('Kullanıcı adı/şifre hatalı')
+    elif st.session_state["authentication_status"] is None:
+        st.warning('Lütfen kullanıcı adı ve şifrenizi girin')
