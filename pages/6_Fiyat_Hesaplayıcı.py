@@ -74,6 +74,8 @@ st.markdown("<p>Fiyatlarınızı analiz edin, senaryoları test edin ve sonuçla
 st.subheader("Adım 1: Ürün Verilerini Yükle")
 
 if st.session_state.get('price_df') is None:
+    # --- İKİ BUTONU GÖSTEREN BÖLÜM ---
+    # Bu bölüm, veriler yüklü değilken iki seçenek sunar.
     col_fetch_new, col_load_saved = st.columns(2)
 
     with col_fetch_new:
@@ -119,6 +121,7 @@ if st.session_state.get('price_df') is None:
                     st.error(f"Kayıtlı veriler okunurken bir hata oluştu: {e}")
             else:
                 st.warning("Daha önce kaydedilmiş bir fiyat listesi bulunamadı.")
+    # --- İKİ BUTONLU BÖLÜMÜN SONU ---
 else:
     st.success(f"✅ {len(st.session_state.price_df)} ürün verisi şu anda hafızada yüklü.")
     if st.button("🧹 Verileri Temizle ve Baştan Başla", use_container_width=True):
@@ -265,7 +268,7 @@ if st.session_state.get('calculated_df') is not None:
 
     with update_col2:
         if st.button("🔥 Mağazaya İndirimli Fiyatları Yansıt", type="primary", use_container_width=True, help="Perakende indirim analizindeki indirimli fiyatları mağazaya yansıtır. Ana fiyat, üstü çizili fiyat olarak ayarlanır."):
-            if retail_discount > 0:
+            if 'retail_discount' in locals() and retail_discount > 0:
                 with st.spinner("Shopify ile bağlantı kuruluyor ve indirimli ürünler hazırlanıyor..."):
                     shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
                     skus_to_update = retail_df['MODEL KODU'].dropna().tolist()
