@@ -28,3 +28,9 @@ config.json
 # Ignore encrypted credentials and secret key
 credentials.enc
 .secret.key
+
+# .gitignore
+.streamlit/secrets.toml
+*.enc
+.secret.key
+data_cache/
