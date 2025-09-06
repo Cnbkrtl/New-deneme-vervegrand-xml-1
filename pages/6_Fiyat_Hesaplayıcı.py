@@ -4,8 +4,9 @@ import math
 from io import BytesIO
 import numpy as np
 
-# Ana dizindeki API sınıflarını import etmek için
+# Gerekli modülleri import ediyoruz
 from shopify_sync import SentosAPI
+import config_manager
 
 # --- Sayfa Yapılandırması ve Güvenlik ---
 st.set_page_config(layout="wide", page_title="Fiyat Analiz Panosu")
@@ -31,25 +32,16 @@ def process_product_list(product_list):
 
 def apply_rounding(price, method):
     if method == "Yukarı Yuvarla":
-        # Fiyatın sonu zaten .99 veya ,99 ile bitmiyorsa 9.99'a tamamla
         if price % 10 != 9.99 and price % 10 != 9:
             return math.floor(price / 10) * 10 + 9.99
-        # Eğer fiyat tam sayı ise (örn. 199), 199.99 yap
         elif price % 1 == 0:
              return price - 0.01
-        return price # Zaten uygun formatta ise dokunma
+        return price
     elif method == "Aşağı Yuvarla":
         return math.floor(price / 10) * 10 + 5.99
     return price
 
-def to_excel(df, sheet_name='Analiz'):
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name=sheet_name)
-        # writer.save() # .close() zaten kaydeder, bu satır gereksiz
-    return output.getvalue()
-
-# --- Session State Başlatma ---
+# --- Session State Başlatma (Giriş sayfasında zaten yapılıyor ama burada da olabilir) ---
 if 'price_df' not in st.session_state: st.session_state.price_df = None
 if 'calculated_df' not in st.session_state: st.session_state.calculated_df = None
 
@@ -60,19 +52,55 @@ st.markdown("<p>Bu pano ile temel perakende fiyatlarınızı oluşturabilir, ard
 st.subheader("Adım 1: Ürün Verilerini Yükle ve Temel Fiyatları Hesapla")
 col_load, col_calc = st.columns(2)
 with col_load:
-    if st.button("🔄 Sentos'tan Alış Fiyatlarını Çek", type="secondary", use_container_width=True, disabled=st.session_state.price_df is not None):
-        status_placeholder = st.empty()
-        def progress_callback(data): status_placeholder.text(f"⏳ {data.get('message', 'İşlem sürüyor...')}")
-        try:
-            sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret)
-            all_products = sentos_api.get_all_products(progress_callback=progress_callback)
-            st.session_state.price_df = process_product_list(all_products)
+    if st.session_state.price_df is None:
+        if st.button("🔄 Sentos'tan Alış Fiyatlarını Çek", type="secondary", use_container_width=True):
+            status_placeholder = st.empty()
+            def progress_callback(data): status_placeholder.text(f"⏳ {data.get('message', 'İşlem sürüyor...')}")
+            try:
+                sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret)
+                all_products = sentos_api.get_all_products(progress_callback=progress_callback)
+                st.session_state.price_df = process_product_list(all_products)
+                st.session_state.calculated_df = None
+                
+                # --- Çekilen veriyi kalıcı olarak kaydet ---
+                try:
+                    username = st.session_state["username"]
+                    price_df_json = st.session_state.price_df.to_json(orient='split')
+                    # Yeni veri çekildiğinde eski hesaplanmış veriyi de temizle
+                    config_manager.save_user_keys(
+                        username,
+                        price_df_json=price_df_json,
+                        calculated_df_json="" 
+                    )
+                    st.toast("Alış fiyatları hesabınıza kalıcı olarak kaydedildi.")
+                except Exception as e:
+                    st.warning(f"Veriler kalıcı olarak kaydedilemedi: {e}")
+                
+                st.rerun()
+            except Exception as e: st.error(f"API bağlantısı kurulamadı: {e}")
+    else:
+        st.success(f"✅ {len(st.session_state.price_df)} ürün verisi hafızaya yüklendi.")
+        if st.button("🧹 Verileri Temizle ve Yeniden Başla", use_container_width=True):
+            st.session_state.price_df = None
             st.session_state.calculated_df = None
+            
+            # --- Kalıcı verileri de temizle ---
+            try:
+                username = st.session_state["username"]
+                config_manager.save_user_keys(
+                    username,
+                    price_df_json="", # Boş değer göndererek silinmesini sağlıyoruz
+                    calculated_df_json=""
+                )
+                st.toast("Kalıcı verileriniz temizlendi.")
+            except Exception as e:
+                st.warning(f"Kalıcı veriler temizlenirken bir hata oluştu: {e}")
+            
             st.rerun()
-        except Exception as e: st.error(f"API bağlantısı kurulamadı: {e}")
 
 if st.session_state.price_df is not None:
     with st.container(border=True):
+        # ... (Bu kısımda değişiklik yok)
         st.markdown("<h6>Temel Fiyatlandırma Kuralları</h6>", unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
         with c1:
@@ -86,7 +114,7 @@ if st.session_state.price_df is not None:
             rounding_method_text = st.radio("Fiyat Yuvarlama", ["Yok", "Yukarı (X,99)", "Aşağı (X,99)"], index=1)
     
     with col_calc:
-        if st.button("💰 Temel Fiyat Listesini Oluştur", type="primary", use_container_width=True):
+        if st.button("💰 Temel Fiyat Listesini Oluştur ve Kaydet", type="primary", use_container_width=True):
             df = st.session_state.price_df.copy()
             df['SATIS_FIYATI_KDVSIZ'] = df['ALIŞ FİYATI'] * (1 + markup_value / 100) if markup_type == "Yüzde Ekle (%)" else df['ALIŞ FİYATI'] * markup_value
             df['SATIS_FIYATI_KDVLI'] = df['SATIS_FIYATI_KDVSIZ'] * (1 + vat_rate / 100) if add_vat else df['SATIS_FIYATI_KDVSIZ']
@@ -97,9 +125,25 @@ if st.session_state.price_df is not None:
             df['KÂR'] = revenue_before_tax - df['ALIŞ FİYATI']
             df['KÂR ORANI (%)'] = np.divide(df['KÂR'], revenue_before_tax, out=np.zeros_like(df['KÂR']), where=revenue_before_tax!=0) * 100
             st.session_state.calculated_df = df
-            st.success("Temel fiyat listesi oluşturuldu ve kaydedildi.")
+            st.success("Temel fiyat listesi oluşturuldu ve hafızaya kaydedildi.")
+            
+            # --- HESAPLANAN VERİYİ KALICI OLARAK KAYDET ---
+            try:
+                username = st.session_state["username"]
+                # Her ihtimale karşı price_df'i de tekrar kaydet
+                price_df_json = st.session_state.price_df.to_json(orient='split')
+                calculated_df_json = st.session_state.calculated_df.to_json(orient='split')
+                config_manager.save_user_keys(
+                    username,
+                    price_df_json=price_df_json,
+                    calculated_df_json=calculated_df_json
+                )
+                st.toast("Hesaplanan fiyat listeniz hesabınıza kalıcı olarak kaydedildi.")
+            except Exception as e:
+                st.warning(f"Hesaplanan veriler kalıcı olarak kaydedilemedi: {e}")
 
 if st.session_state.calculated_df is not None:
+    # ... (Sayfanın geri kalan analiz kısmı olduğu gibi kalabilir, değişiklik yok)
     st.markdown("---")
     st.subheader("Adım 2: Senaryoları Analiz Et")
 
@@ -151,11 +195,9 @@ if st.session_state.calculated_df is not None:
         wholesale_df['TOPTAN KÂR'] = wholesale_df["TOPTAN FİYAT (KDV'siz)"] - wholesale_df["ALIŞ FİYATI"]
         wholesale_df['TOPTAN KÂR ORANI (%)'] = np.divide(wholesale_df['TOPTAN KÂR'], wholesale_df["TOPTAN FİYAT (KDV'siz)"], out=np.zeros_like(wholesale_df['TOPTAN KÂR']), where=wholesale_df["TOPTAN FİYAT (KDV'siz)"]!=0) * 100
         
-        # HATA DÜZELTMESİ: 'TOPTAN FİYAT (KDV'siz)' sütun adı çift tırnak içine alındı
         wholesale_cols_to_show = ['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', "TOPTAN FİYAT (KDV'siz)", 'TOPTAN KÂR', 'TOPTAN KÂR ORANI (%)']
         wholesale_display_df = wholesale_df[wholesale_cols_to_show]
 
-        # HATA DÜZELTMESİ: "TOPTAN FİYAT (KDV'siz)" anahtarı çift tırnak içine alındı
         wholesale_format_dict = {
             'ALIŞ FİYATI': '{:,.2f} ₺', "TOPTAN FİYAT (KDV'siz)": '{:,.2f} ₺', 'TOPTAN KÂR': '{:,.2f} ₺', 'TOPTAN KÂR ORANI (%)': '{:.2f}%'
         }

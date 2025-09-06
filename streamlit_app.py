@@ -3,7 +3,9 @@ import yaml
 import streamlit_authenticator as stauth
 from yaml.loader import SafeLoader
 import os
+import pandas as pd  # Pandas'ı import etmeyi unutmayın
 
+# config_manager ve API sınıflarını import ediyoruz
 from config_manager import load_all_keys
 from shopify_sync import ShopifyAPI, SentosAPI
 
@@ -28,32 +30,50 @@ def initialize_session_state_defaults():
     defaults = {
         'shopify_status': 'pending', 'sentos_status': 'pending',
         'shopify_data': {}, 'sentos_data': {},
-        'user_data_loaded_for': None
+        'user_data_loaded_for': None,
+        # Fiyatlama verileri için başlangıç değerleri
+        'price_df': None,
+        'calculated_df': None
     }
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
 
 def load_and_verify_user_data(username):
-    """Kullanıcıya özel API anahtarlarını yükler ve bağlantıları test eder."""
+    """Kullanıcıya özel verileri yükler, bağlantıları test eder ve kalıcı fiyat tablolarını geri yükler."""
     if st.session_state.get('user_data_loaded_for') == username:
-        return # Veriler zaten yüklüyse tekrar çalıştırma
+        return
 
-    st.session_state.shopify_status = 'pending'
-    st.session_state.sentos_status = 'pending'
+    initialize_session_state_defaults() # Her kullanıcı değişiminde state'i sıfırla
 
     all_creds = load_all_keys()
     user_creds = all_creds.get(username, {})
 
     # API anahtarlarını session_state'e yükle
-    st.session_state.shopify_store = user_creds.get('shopify_store')
-    st.session_state.shopify_token = user_creds.get('shopify_token')
-    st.session_state.sentos_api_url = user_creds.get('sentos_api_url')
-    st.session_state.sentos_api_key = user_creds.get('sentos_api_key')
-    st.session_state.sentos_api_secret = user_creds.get('sentos_api_secret')
-    st.session_state.sentos_cookie = user_creds.get('sentos_cookie')
-    # --- EKSİK SATIR BURAYA EKLENDİ ---
-    st.session_state.gcp_service_account_json = user_creds.get('gcp_service_account_json')
+    st.session_state.update({
+        'shopify_store': user_creds.get('shopify_store'),
+        'shopify_token': user_creds.get('shopify_token'),
+        'sentos_api_url': user_creds.get('sentos_api_url'),
+        'sentos_api_key': user_creds.get('sentos_api_key'),
+        'sentos_api_secret': user_creds.get('sentos_api_secret'),
+        'sentos_cookie': user_creds.get('sentos_cookie'),
+        'gcp_service_account_json': user_creds.get('gcp_service_account_json')
+    })
+    
+    # --- YENİ EKLENEN KALICI VERİ YÜKLEME MANTIĞI ---
+    try:
+        price_df_json = user_creds.get('price_df_json')
+        if price_df_json:
+            st.session_state.price_df = pd.read_json(price_df_json, orient='split')
+
+        calculated_df_json = user_creds.get('calculated_df_json')
+        if calculated_df_json:
+            st.session_state.calculated_df = pd.read_json(calculated_df_json, orient='split')
+    except Exception as e:
+        print(f"Kullanıcı {username} için kalıcı fiyat verileri yüklenirken hata oluştu: {e}")
+        st.session_state.price_df = None
+        st.session_state.calculated_df = None
+
 
     # Bağlantıları test et
     if st.session_state.shopify_store and st.session_state.shopify_token:
@@ -74,8 +94,6 @@ def load_and_verify_user_data(username):
 
 
 # --- Uygulama Başlangıcı ---
-initialize_session_state_defaults()
-
 with open('config.yaml') as file:
     config = yaml.load(file, Loader=SafeLoader)
 
@@ -89,14 +107,14 @@ authenticator = stauth.Authenticate(
 authenticator.login()
 
 if st.session_state["authentication_status"]:
-    # Kullanıcı giriş yaptığında, API anahtarlarını yükle ve doğrula
+    # Giriş yapıldığında kullanıcı verilerini yükle (içinde kalıcı fiyat verileri de var)
     load_and_verify_user_data(st.session_state["username"])
 
     with st.sidebar:
         st.title(f"Hoş geldiniz, *{st.session_state['name']}*!")
         authenticator.logout(use_container_width=True)
         st.markdown("---")
-        st.info("Vervegrand Sync Tool v22.0 (Cloud Edition)")
+        st.info("Vervegrand Sync Tool v22.1 (Cloud Edition)")
 
     # Ana Sayfa İçeriği
     st.markdown("""
@@ -105,9 +123,11 @@ if st.session_state["authentication_status"]:
             <p>Panele hoş geldiniz. Lütfen kenar çubuğundan bir sayfa seçin.</p>
         </div>
         """, unsafe_allow_html=True)
-    st.info("👈 Lütfen başlamak için kenar çubuğundan **Ayarlar** veya **Senkronizasyon** sayfasını seçin.")
+    st.info("👈 Lütfen başlamak için kenar çubuğundan bir sayfa seçin.")
 
 elif st.session_state["authentication_status"] is False:
     st.error('Kullanıcı adı/şifre hatalı')
 elif st.session_state["authentication_status"] is None:
+    # Oturum durumu varsayılanlarını burada başlat
+    initialize_session_state_defaults()
     st.warning('Lütfen kullanıcı adı ve şifrenizi girin')
