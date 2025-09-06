@@ -3,10 +3,10 @@ import yaml
 import streamlit_authenticator as stauth
 from yaml.loader import SafeLoader
 import os
-import pandas as pd  # Pandas'ı import etmeyi unutmayın
+import pandas as pd
 
-# config_manager ve API sınıflarını import ediyoruz
 from config_manager import load_all_keys
+from data_manager import load_user_data 
 from shopify_sync import ShopifyAPI, SentosAPI
 
 # --- Sayfa Yapılandırması ---
@@ -31,7 +31,6 @@ def initialize_session_state_defaults():
         'shopify_status': 'pending', 'sentos_status': 'pending',
         'shopify_data': {}, 'sentos_data': {},
         'user_data_loaded_for': None,
-        # Fiyatlama verileri için başlangıç değerleri
         'price_df': None,
         'calculated_df': None
     }
@@ -42,14 +41,13 @@ def initialize_session_state_defaults():
 def load_and_verify_user_data(username):
     """Kullanıcıya özel verileri yükler, bağlantıları test eder ve kalıcı fiyat tablolarını geri yükler."""
     if st.session_state.get('user_data_loaded_for') == username:
-        return
+        return # Veriler zaten bu kullanıcı için yüklüyse tekrar çalıştırma
 
-    initialize_session_state_defaults() # Her kullanıcı değişiminde state'i sıfırla
+    initialize_session_state_defaults()
 
+    # 1. API Anahtarlarını ve ayarları yükle
     all_creds = load_all_keys()
     user_creds = all_creds.get(username, {})
-
-    # API anahtarlarını session_state'e yükle
     st.session_state.update({
         'shopify_store': user_creds.get('shopify_store'),
         'shopify_token': user_creds.get('shopify_token'),
@@ -60,13 +58,14 @@ def load_and_verify_user_data(username):
         'gcp_service_account_json': user_creds.get('gcp_service_account_json')
     })
     
-    # --- YENİ EKLENEN KALICI VERİ YÜKLEME MANTIĞI ---
+    # 2. Kalıcı Fiyat Verilerini YENİ data_manager'dan yükle
+    user_price_data = load_user_data(username)
     try:
-        price_df_json = user_creds.get('price_df_json')
+        price_df_json = user_price_data.get('price_df_json')
         if price_df_json:
             st.session_state.price_df = pd.read_json(price_df_json, orient='split')
 
-        calculated_df_json = user_creds.get('calculated_df_json')
+        calculated_df_json = user_price_data.get('calculated_df_json')
         if calculated_df_json:
             st.session_state.calculated_df = pd.read_json(calculated_df_json, orient='split')
     except Exception as e:
@@ -74,8 +73,7 @@ def load_and_verify_user_data(username):
         st.session_state.price_df = None
         st.session_state.calculated_df = None
 
-
-    # Bağlantıları test et
+    # 3. API Bağlantılarını test et
     if st.session_state.shopify_store and st.session_state.shopify_token:
         try:
             api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
@@ -107,14 +105,14 @@ authenticator = stauth.Authenticate(
 authenticator.login()
 
 if st.session_state["authentication_status"]:
-    # Giriş yapıldığında kullanıcı verilerini yükle (içinde kalıcı fiyat verileri de var)
+    # Giriş yapıldığında kullanıcı verilerini yükle
     load_and_verify_user_data(st.session_state["username"])
 
     with st.sidebar:
         st.title(f"Hoş geldiniz, *{st.session_state['name']}*!")
         authenticator.logout(use_container_width=True)
         st.markdown("---")
-        st.info("Vervegrand Sync Tool v22.1 (Cloud Edition)")
+        st.info("Vervegrand Sync Tool v23.0 (Cloud Edition)")
 
     # Ana Sayfa İçeriği
     st.markdown("""
@@ -128,6 +126,5 @@ if st.session_state["authentication_status"]:
 elif st.session_state["authentication_status"] is False:
     st.error('Kullanıcı adı/şifre hatalı')
 elif st.session_state["authentication_status"] is None:
-    # Oturum durumu varsayılanlarını burada başlat
     initialize_session_state_defaults()
     st.warning('Lütfen kullanıcı adı ve şifrenizi girin')

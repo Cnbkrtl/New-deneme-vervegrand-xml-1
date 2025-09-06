@@ -4,45 +4,15 @@ import math
 from io import BytesIO
 import numpy as np
 
-# Gerekli modülleri import ediyoruz
-from shopify_sync import ShopifyAPI
-import config_manager
+from shopify_sync import ShopifyAPI, SentosAPI
+import data_manager
 
-# --- Sayfa Yapılandırması ve Güvenlik ---
 st.set_page_config(layout="wide", page_title="Fiyat Analiz ve Yönetim Panosu")
 
 if not st.session_state.get("authentication_status"):
     st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
     st.stop()
 
-# --- YENİ: Sayfa Yüklendiğinde Kalıcı Verileri Kontrol Et ve Yükle ---
-# Bu blok, verilerin session_state'de mevcut olmasını garanti eder.
-# Eğer veriler (örn: sayfa yenileme sonrası) session'da yoksa ama kalıcı olarak kayıtlıysa, buradan yüklenir.
-if st.session_state.get('price_df') is None:
-    username = st.session_state.get("username")
-    if username:
-        # st.toast("Kalıcı veriler kontrol ediliyor...") # Kullanıcıya bilgi vermek için isteğe bağlı
-        all_creds = config_manager.load_all_keys()
-        user_creds = all_creds.get(username, {})
-        
-        try:
-            price_df_json = user_creds.get('price_df_json')
-            if price_df_json:
-                st.session_state.price_df = pd.read_json(price_df_json, orient='split')
-
-            calculated_df_json = user_creds.get('calculated_df_json')
-            if calculated_df_json:
-                st.session_state.calculated_df = pd.read_json(calculated_df_json, orient='split')
-            else:
-                st.session_state.calculated_df = None
-                
-        except Exception:
-            # Hata durumunda session state'in temiz olduğundan emin ol
-            st.session_state.price_df = None
-            st.session_state.calculated_df = None
-
-
-# --- Yardımcı Fonksiyonlar ---
 def process_product_list(product_list):
     processed_products = []
     for p in product_list:
@@ -67,36 +37,30 @@ def apply_rounding(price, method):
         return math.floor(price / 10) * 10 + 5.99
     return price
 
-# --- ARAYÜZ ---
 st.markdown("<h1>📊 Fiyat Stratejisi ve Yönetim Panosu</h1>", unsafe_allow_html=True)
 st.markdown("<p>Fiyatlarınızı analiz edin, senaryoları test edin ve sonuçları tek tuşla Shopify mağazanıza yansıtın.</p>", unsafe_allow_html=True)
 
 st.subheader("Adım 1: Ürün Verilerini Yükle ve Temel Fiyatları Hesapla")
 col_load, col_calc = st.columns(2)
 with col_load:
-    if st.session_state.price_df is None:
+    if st.session_state.get('price_df') is None:
         if st.button("🔄 Sentos'tan Alış Fiyatlarını Çek", type="secondary", use_container_width=True):
             status_placeholder = st.empty()
             def progress_callback(data): status_placeholder.text(f"⏳ {data.get('message', 'İşlem sürüyor...')}")
             try:
-                from shopify_sync import SentosAPI
                 sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret)
                 all_products = sentos_api.get_all_products(progress_callback=progress_callback)
                 st.session_state.price_df = process_product_list(all_products)
                 st.session_state.calculated_df = None
                 
-                try:
-                    username = st.session_state["username"]
-                    price_df_json = st.session_state.price_df.to_json(orient='split')
-                    config_manager.save_user_keys(
-                        username,
-                        price_df_json=price_df_json,
-                        calculated_df_json="" 
-                    )
-                    st.toast("Alış fiyatları hesabınıza kalıcı olarak kaydedildi.")
-                except Exception as e:
-                    st.warning(f"Veriler kalıcı olarak kaydedilemedi: {e}")
-                
+                username = st.session_state["username"]
+                price_df_json = st.session_state.price_df.to_json(orient='split')
+                data_manager.save_user_data(
+                    username,
+                    price_df_json=price_df_json,
+                    calculated_df_json="" 
+                )
+                st.toast("Alış fiyatları hesabınıza kalıcı olarak kaydedildi.")
                 st.rerun()
             except Exception as e: st.error(f"API bağlantısı kurulamadı: {e}")
     else:
@@ -105,20 +69,12 @@ with col_load:
             st.session_state.price_df = None
             st.session_state.calculated_df = None
             
-            try:
-                username = st.session_state["username"]
-                config_manager.save_user_keys(
-                    username,
-                    price_df_json="",
-                    calculated_df_json=""
-                )
-                st.toast("Kalıcı verileriniz temizlendi.")
-            except Exception as e:
-                st.warning(f"Kalıcı veriler temizlenirken bir hata oluştu: {e}")
-            
+            username = st.session_state["username"]
+            data_manager.delete_user_data(username)
+            st.toast("Kalıcı verileriniz temizlendi.")
             st.rerun()
 
-if st.session_state.price_df is not None:
+if st.session_state.get('price_df') is not None:
     with st.container(border=True):
         st.markdown("<h6>Temel Fiyatlandırma Kuralları</h6>", unsafe_allow_html=True)
         c1, c2, c3 = st.columns(3)
@@ -147,20 +103,17 @@ if st.session_state.price_df is not None:
             st.session_state.calculated_df = df
             st.success("Temel fiyat listesi oluşturuldu ve hafızaya kaydedildi.")
             
-            try:
-                username = st.session_state["username"]
-                price_df_json = st.session_state.price_df.to_json(orient='split')
-                calculated_df_json = st.session_state.calculated_df.to_json(orient='split')
-                config_manager.save_user_keys(
-                    username,
-                    price_df_json=price_df_json,
-                    calculated_df_json=calculated_df_json
-                )
-                st.toast("Hesaplanan fiyat listeniz hesabınıza kalıcı olarak kaydedildi.")
-            except Exception as e:
-                st.warning(f"Hesaplanan veriler kalıcı olarak kaydedilemedi: {e}")
+            username = st.session_state["username"]
+            price_df_json = st.session_state.price_df.to_json(orient='split')
+            calculated_df_json = st.session_state.calculated_df.to_json(orient='split')
+            data_manager.save_user_data(
+                username,
+                price_df_json=price_df_json,
+                calculated_df_json=calculated_df_json
+            )
+            st.toast("Hesaplanan fiyat listeniz kalıcı olarak kaydedildi.")
 
-if st.session_state.calculated_df is not None:
+if st.session_state.get('calculated_df') is not None:
     st.markdown("---")
     st.subheader("Adım 2: Senaryoları Analiz Et")
 
@@ -187,10 +140,7 @@ if st.session_state.calculated_df is not None:
             retail_cols_to_show = ['MODEL KODU', 'ÜRÜN ADI', 'NIHAI_SATIS_FIYATI', 'İNDİRİM ORANI (%)', 'İNDİRİMLİ SATIŞ FİYATI', 'İNDİRİM SONRASI KÂR', 'İNDİRİM SONRASI KÂR ORANI (%)']
             retail_display_df = retail_df[retail_cols_to_show]
             
-            retail_format_dict = {
-                'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', 'İNDİRİM ORANI (%)': '{:.0f}%', 'İNDİRİMLİ SATIŞ FİYATI': '{:,.2f} ₺',
-                'İNDİRİM SONRASI KÂR': '{:,.2f} ₺', 'İNDİRİM SONRASI KÂR ORANI (%)': '{:.2f}%'
-            }
+            retail_format_dict = { 'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', 'İNDİRİM ORANI (%)': '{:.0f}%', 'İNDİRİMLİ SATIŞ FİYATI': '{:,.2f} ₺', 'İNDİRİM SONRASI KÂR': '{:,.2f} ₺', 'İNDİRİM SONRASI KÂR ORANI (%)': '{:.2f}%' }
             st.dataframe(retail_display_df.style.format(retail_format_dict), use_container_width=True)
         else:
             st.info("Perakende indirim senaryosunu görmek için yukarıdaki kaydırma çubuğunu ayarlayın.")
@@ -214,18 +164,8 @@ if st.session_state.calculated_df is not None:
         wholesale_df['TOPTAN KÂR'] = wholesale_df["TOPTAN FİYAT (KDV'siz)"] - wholesale_df["ALIŞ FİYATI"]
         wholesale_df['PERAKENDEDEN İSKONTO (%)'] = (1 - (wholesale_df["TOPTAN FİYAT (KDV'li)"] / wholesale_df['NIHAI_SATIS_FIYATI'])) * 100
 
-        wholesale_cols_to_show = [
-            'MODEL KODU', 'ÜRÜN ADI', 'NIHAI_SATIS_FIYATI', 
-            "TOPTAN FİYAT (KDV'siz)", "TOPTAN FİYAT (KDV'li)",
-            'TOPTAN KÂR', 'PERAKENDEDEN İSKONTO (%)'
-        ]
-        wholesale_format_dict = {
-            'NIHAI_SATIS_FIYATI': '{:,.2f} ₺',
-            "TOPTAN FİYAT (KDV'siz)": '{:,.2f} ₺',
-            "TOPTAN FİYAT (KDV'li)": '{:,.2f} ₺',
-            'TOPTAN KÂR': '{:,.2f} ₺', 
-            'PERAKENDEDEN İSKONTO (%)': '{:.2f}%'
-        }
+        wholesale_cols_to_show = [ 'MODEL KODU', 'ÜRÜN ADI', 'NIHAI_SATIS_FIYATI', "TOPTAN FİYAT (KDV'siz)", "TOPTAN FİYAT (KDV'li)", 'TOPTAN KÂR', 'PERAKENDEDEN İSKONTO (%)' ]
+        wholesale_format_dict = { 'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', "TOPTAN FİYAT (KDV'siz)": '{:,.2f} ₺', "TOPTAN FİYAT (KDV'li)": '{:,.2f} ₺', 'TOPTAN KÂR': '{:,.2f} ₺', 'PERAKENDEDEN İSKONTO (%)': '{:.2f}%' }
         st.dataframe(wholesale_df[wholesale_cols_to_show].style.format(wholesale_format_dict), use_container_width=True)
 
     st.markdown("---")
@@ -245,11 +185,7 @@ if st.session_state.calculated_df is not None:
                 for _, row in st.session_state.calculated_df.iterrows():
                     sku = row['MODEL KODU']
                     if sku in variant_map:
-                        updates.append({
-                            "variant_id": variant_map[sku],
-                            "price": f"{row['NIHAI_SATIS_FIYATI']:.2f}",
-                            "compare_at_price": None
-                        })
+                        updates.append({ "variant_id": variant_map[sku], "price": f"{row['NIHAI_SATIS_FIYATI']:.2f}", "compare_at_price": None })
             
             if updates:
                 st.write(f"{len(updates)} adet ürün fiyatı güncellenmek üzere Shopify'a gönderiliyor...")
@@ -274,11 +210,7 @@ if st.session_state.calculated_df is not None:
                     for _, row in retail_df.iterrows():
                         sku = row['MODEL KODU']
                         if sku in variant_map:
-                            updates.append({
-                                "variant_id": variant_map[sku],
-                                "price": f"{row['İNDİRİMLİ SATIŞ FİYATI']:.2f}",
-                                "compare_at_price": f"{row['NIHAI_SATIS_FIYATI']:.2f}"
-                            })
+                            updates.append({ "variant_id": variant_map[sku], "price": f"{row['İNDİRİMLİ SATIŞ FİYATI']:.2f}", "compare_at_price": f"{row['NIHAI_SATIS_FIYATI']:.2f}" })
 
                 if updates:
                     st.write(f"{len(updates)} adet ürüne %{retail_discount} indirim uygulanıyor...")
