@@ -10,5 +10,5 @@ credentials:
       password: '$2b$12$gIqHjCLxMPnzzsgt9Tk80u9feBQHpUAt50hBSO5BByjCpgKRJgn5W' # generate_keys.py'den gelen ikinci hash
 cookie:
   expiry_days: 30
-  key: 'cnbkrtl_ozel_akitma' # Bu anahtarı rastgele bir şeyle değiştirin
-  name: 'some_cookie_name'
+  name: 'vervegrand_portal'
+  key: '57b9996a7ac860f4aa8b36873f5b5a192aaba3eac4bbc39ba3db8bc0c7bc3d87' # Bu anahtarı rastgele bir şeyle değiştirin
