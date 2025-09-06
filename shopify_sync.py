@@ -339,6 +339,98 @@ class ShopifyAPI:
         
         logging.info(f"Export için toplam {len(all_products)} ürün çekildi.")
         return all_products
+    
+    # YENİ FONKSİYON 1: SKU'LARA GÖRE VARYANT ID'LERİNİ ÇEKER
+    def get_variant_ids_by_skus(self, skus: list) -> dict:
+        """Verilen SKU listesine karşılık gelen Shopify varyant GID'lerini toplu olarak çeker."""
+        if not skus:
+            return {}
+
+        logging.info(f"{len(skus)} adet SKU için varyant ID'leri aranıyor...")
+        sku_map = {}
+        # Sorguyu 50'li gruplar halinde yaparız ki URL çok uzamasın
+        for i in range(0, len(skus), 50):
+            sku_chunk = skus[i:i + 50]
+            query_filter = " OR ".join([f"sku:'{sku.strip()}'" for sku in sku_chunk])
+            
+            query = """
+            query getVariantIds($query: String!) {
+              productVariants(first: 250, query: $query) {
+                edges {
+                  node {
+                    id
+                    sku
+                  }
+                }
+              }
+            }
+            """
+            try:
+                result = self.execute_graphql(query, {"query": query_filter})
+                variants = result.get("productVariants", {}).get("edges", [])
+                for edge in variants:
+                    node = edge.get("node", {})
+                    if node.get("sku") and node.get("id"):
+                        sku_map[node["sku"]] = node["id"]
+            except Exception as e:
+                logging.error(f"SKU grubu {i//50+1} için varyant ID'leri alınırken hata: {e}")
+        
+        logging.info(f"Toplam {len(sku_map)} eşleşen varyant ID'si bulundu.")
+        return sku_map
+
+    # YENİ FONKSİYON 2: VARYANT FİYATLARINI TOPLU GÜNCELLER
+    def bulk_update_variant_prices(self, price_updates: list) -> dict:
+        """
+        Verilen varyant listesinin fiyat ve karşılaştırma fiyatını toplu olarak günceller.
+        price_updates formatı: [{'variant_id': GID, 'price': '100.00', 'compare_at_price': '150.00' or None}, ...]
+        """
+        if not price_updates:
+            return {"success": 0, "failed": 0, "errors": []}
+
+        results = {"success": 0, "failed": 0, "errors": []}
+        
+        def update_single_variant(update_data):
+            variant_id = update_data.get("variant_id")
+            price_input = {
+                "id": variant_id,
+                "price": update_data.get("price")
+            }
+            # compare_at_price None ise, GraphQL'e bu alanı hiç göndermeyiz veya null olarak göndeririz.
+            if "compare_at_price" in update_data:
+                 price_input["compareAtPrice"] = update_data.get("compare_at_price")
+
+            mutation = """
+            mutation productVariantUpdate($input: ProductVariantInput!) {
+              productVariantUpdate(input: $input) {
+                productVariant {
+                  id
+                }
+                userErrors {
+                  field
+                  message
+                }
+              }
+            }
+            """
+            try:
+                response = self.execute_graphql(mutation, {"input": price_input})
+                if response.get("productVariantUpdate", {}).get("userErrors"):
+                    errors = response["productVariantUpdate"]["userErrors"]
+                    raise Exception(str(errors))
+                return True
+            except Exception as e:
+                results["errors"].append(f"Variant {variant_id}: {e}")
+                return False
+
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(update_single_variant, update) for update in price_updates]
+            for future in as_completed(futures):
+                if future.result():
+                    results["success"] += 1
+                else:
+                    results["failed"] += 1
+        
+        return results
 
 # --- Sentos API Sınıfı ---
 # ... (Bu kısımda değişiklik yok, olduğu gibi kalabilir)
