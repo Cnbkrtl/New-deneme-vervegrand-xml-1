@@ -4,7 +4,6 @@ import os
 import json
 from cryptography.fernet import Fernet
 
-# config_manager ile aynı anahtarı ve temel dosya adlarını kullanacağız
 KEY_FILE = ".secret.key"
 DATA_CACHE_DIR = "data_cache" # Veri dosyaları için ayrı bir klasör
 
@@ -69,7 +68,6 @@ def load_user_data(username):
         return json.loads(decrypted_data.decode('utf-8'))
     except Exception as e:
         print(f"Kullanıcı verisi '{username}' yüklenirken hata: {e}")
-        # Hata durumunda bozuk dosyayı silerek temiz bir başlangıç sağla
         os.remove(file_path)
         return {}
 
@@ -86,4 +84,4 @@ def delete_user_data(username):
         except Exception as e:
             print(f"Kullanıcı veri dosyası '{file_path}' silinirken hata: {e}")
             return False
-    return True # Dosya zaten yoksa başarılı say
+    return True

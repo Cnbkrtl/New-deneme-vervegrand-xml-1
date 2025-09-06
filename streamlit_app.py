@@ -5,8 +5,9 @@ from yaml.loader import SafeLoader
 import os
 import pandas as pd
 
+# config_manager ve API sınıflarını import ediyoruz
 from config_manager import load_all_keys
-from data_manager import load_user_data 
+from data_manager import load_user_data  # ### EKLENDİ ### -> Doğru veri yöneticisini import ediyoruz
 from shopify_sync import ShopifyAPI, SentosAPI
 
 # --- Sayfa Yapılandırması ---
@@ -31,6 +32,7 @@ def initialize_session_state_defaults():
         'shopify_status': 'pending', 'sentos_status': 'pending',
         'shopify_data': {}, 'sentos_data': {},
         'user_data_loaded_for': None,
+        # Fiyatlama verileri için başlangıç değerleri
         'price_df': None,
         'calculated_df': None
     }
@@ -41,13 +43,14 @@ def initialize_session_state_defaults():
 def load_and_verify_user_data(username):
     """Kullanıcıya özel verileri yükler, bağlantıları test eder ve kalıcı fiyat tablolarını geri yükler."""
     if st.session_state.get('user_data_loaded_for') == username:
-        return # Veriler zaten bu kullanıcı için yüklüyse tekrar çalıştırma
+        return
 
-    initialize_session_state_defaults()
+    initialize_session_state_defaults() # Her kullanıcı değişiminde state'i sıfırla
 
-    # 1. API Anahtarlarını ve ayarları yükle
     all_creds = load_all_keys()
     user_creds = all_creds.get(username, {})
+
+    # API anahtarlarını session_state'e yükle
     st.session_state.update({
         'shopify_store': user_creds.get('shopify_store'),
         'shopify_token': user_creds.get('shopify_token'),
@@ -58,7 +61,8 @@ def load_and_verify_user_data(username):
         'gcp_service_account_json': user_creds.get('gcp_service_account_json')
     })
     
-    # 2. Kalıcı Fiyat Verilerini YENİ data_manager'dan yükle
+    # ### DEĞİŞTİRİLDİ ### -> Önceki hatalı blok tamamen bu doğru blok ile değiştirildi.
+    # Fiyat verileri artık kendi özel yöneticisinden (data_manager) yükleniyor.
     user_price_data = load_user_data(username)
     try:
         price_df_json = user_price_data.get('price_df_json')
@@ -73,7 +77,8 @@ def load_and_verify_user_data(username):
         st.session_state.price_df = None
         st.session_state.calculated_df = None
 
-    # 3. API Bağlantılarını test et
+
+    # Bağlantıları test et
     if st.session_state.shopify_store and st.session_state.shopify_token:
         try:
             api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
@@ -105,7 +110,7 @@ authenticator = stauth.Authenticate(
 authenticator.login()
 
 if st.session_state["authentication_status"]:
-    # Giriş yapıldığında kullanıcı verilerini yükle
+    # Giriş yapıldığında kullanıcı verilerini yükle (içinde kalıcı fiyat verileri de var)
     load_and_verify_user_data(st.session_state["username"])
 
     with st.sidebar:
@@ -126,5 +131,6 @@ if st.session_state["authentication_status"]:
 elif st.session_state["authentication_status"] is False:
     st.error('Kullanıcı adı/şifre hatalı')
 elif st.session_state["authentication_status"] is None:
+    # Oturum durumu varsayılanlarını burada başlat
     initialize_session_state_defaults()
     st.warning('Lütfen kullanıcı adı ve şifrenizi girin')
