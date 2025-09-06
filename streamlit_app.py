@@ -1,4 +1,4 @@
-# streamlit_app.py (TEŞHİS MODU)
+# streamlit_app.py (Nihai Sürüm)
 
 import streamlit as st
 import yaml
@@ -6,66 +6,71 @@ import streamlit_authenticator as stauth
 from yaml.loader import SafeLoader
 import pandas as pd
 from io import StringIO
-import os # Dosya kontrolü için eklendi
+import os
 
-# Diğer importlar
+# Gerekli modülleri import ediyoruz
 from config_manager import load_all_user_keys
 from data_manager import load_user_data
 from shopify_sync import ShopifyAPI, SentosAPI
 
 st.set_page_config(page_title="Vervegrand Sync", page_icon="🔄", layout="wide", initial_sidebar_state="expanded")
 
-# --- TEŞHİS FONKSİYONLARI ---
-def check_and_display_config():
-    """config.yaml dosyasını kontrol eder ve kritik bilgileri ekrana basar."""
-    st.warning("--- TEŞHİS BİLGİLERİ (Geliştirici Modu) ---")
-    config_path = 'config.yaml'
-    if os.path.exists(config_path):
-        st.info(f"✅ `{config_path}` dosyası bulundu.")
-        try:
-            with open(config_path) as file:
-                config = yaml.load(file, Loader=SafeLoader)
-                cookie_config = config.get('cookie', {})
-                cookie_name = cookie_config.get('name', 'BULUNAMADI')
-                cookie_key = cookie_config.get('key', 'BULUNAMADI')
-                
-                st.info(f"📄 Okunan Cookie Adı: `{cookie_name}`")
-                st.info(f"🔑 Okunan Cookie Anahtarı (ilk 5 karakter): `{cookie_key[:5]}...`")
-                
-                if cookie_key == 'BU_KISMI_COK_GUVENLI_VE_RASTGELE_BIR_SEYLE_DEGISTIRIN' or len(cookie_key) < 32:
-                     st.error("DİKKAT: Cookie anahtarı (`key`) `config.yaml` içinde güvenli bir değerle değiştirilmemiş gibi görünüyor!")
-                return config
-        except Exception as e:
-            st.error(f"❌ `{config_path}` dosyası okunurken hata oluştu: {e}")
-            return None
-    else:
-        st.error(f"❌ KRİTİK HATA: `{config_path}` dosyası projenin ana dizininde bulunamadı!")
-        return None
-
-# --- Normal Fonksiyonlar ---
 def initialize_session_state_defaults():
-    defaults = { 'authentication_status': None }
+    """Oturum durumu için başlangıç değerlerini ayarlar."""
+    defaults = {
+        'authentication_status': None,
+        'shopify_status': 'pending', 'sentos_status': 'pending',
+        'shopify_data': {}, 'sentos_data': {}, 'user_data_loaded_for': None,
+        'price_df': None, 'calculated_df': None
+    }
     for key, value in defaults.items():
-        if key not in st.session_state: st.session_state[key] = value
+        if key not in st.session_state:
+            st.session_state[key] = value
 
 def load_and_verify_user_data(username):
-    # Bu fonksiyonun içeriği aynı kalabilir...
-    pass
+    """Kullanıcıya özel sırları ve verileri yükler."""
+    if st.session_state.get('user_data_loaded_for') == username:
+        return # Veriler zaten bu kullanıcı için yüklü
 
-# --- UYGULAMA AKIŞI ---
+    # API anahtarlarını Streamlit Secrets'tan yükle
+    user_keys = load_all_user_keys(username)
+    st.session_state.update(user_keys)
+    
+    # Kalıcı fiyat verilerini data_manager'dan yükle
+    user_price_data = load_user_data(username)
+    try:
+        price_df_json = user_price_data.get('price_df_json')
+        if price_df_json:
+            st.session_state.price_df = pd.read_json(StringIO(price_df_json), orient='split')
 
-# 1. Önce session state'i başlat
-initialize_session_state_defaults()
+        calculated_df_json = user_price_data.get('calculated_df_json')
+        if calculated_df_json:
+            st.session_state.calculated_df = pd.read_json(StringIO(calculated_df_json), orient='split')
+    except Exception as e:
+        st.session_state.price_df = None
+        st.session_state.calculated_df = None
 
-# 2. Config dosyasını kontrol et ve yükle
-config = check_and_display_config()
+    # Bağlantıları test et
+    if st.session_state.get('shopify_store') and st.session_state.get('shopify_token'):
+        try:
+            api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
+            st.session_state.shopify_data = api.test_connection()
+            st.session_state.shopify_status = 'connected'
+        except: st.session_state.shopify_status = 'failed'
 
-# 3. Eğer config dosyası okunamadıysa, uygulamayı durdur.
-if not config:
-    st.error("Uygulama başlatılamıyor. Lütfen yukarıdaki teşhis mesajlarını kontrol edin.")
-    st.stop()
+    if st.session_state.get('sentos_api_url') and st.session_state.get('sentos_api_key') and st.session_state.get('sentos_api_secret'):
+        try:
+            api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
+            st.session_state.sentos_data = api.test_connection()
+            st.session_state.sentos_status = 'connected' if st.session_state.sentos_data.get('success') else 'failed'
+        except: st.session_state.sentos_status = 'failed'
 
-# 4. Authenticator'ı başlat
+    st.session_state['user_data_loaded_for'] = username
+
+# --- Uygulama Başlangıcı ---
+with open('config.yaml') as file:
+    config = yaml.load(file, Loader=SafeLoader)
+
 authenticator = stauth.Authenticate(
     config['credentials'],
     config['cookie']['name'],
@@ -73,36 +78,19 @@ authenticator = stauth.Authenticate(
     config['cookie']['expiry_days']
 )
 
-# 5. Login fonksiyonunu çağır
 authenticator.login()
 
-# 6. Session durumunu kontrol et ve ekrana bas
-st.info(f"🕵️‍♂️ Session Durumu: `authentication_status` = `{st.session_state.get('authentication_status')}`")
-
-try:
-    # Cookie'nin tarayıcıdan okunup okunmadığını kontrol et
-    cookie_value = authenticator.cookie_manager.get(authenticator.cookie_name)
-    if cookie_value:
-        st.info("🍪 Tarayıcıda bir cookie bulundu ve okundu.")
-    else:
-        st.info("🍪 Tarayıcıda geçerli bir cookie bulunamadı.")
-except Exception as e:
-    st.error(f"Cookie okunurken bir hata oluştu: {e}")
-
-st.warning("--- TEŞHİS BİLGİLERİ SONU ---")
-
-
 if st.session_state.get("authentication_status"):
-    # load_and_verify_user_data(st.session_state["username"]) # Şimdilik bu kısmı devre dışı bırakalım
+    load_and_verify_user_data(st.session_state.get("username"))
     with st.sidebar:
         st.title(f"Hoş geldiniz, *{st.session_state.get('name')}*!")
         authenticator.logout(use_container_width=True)
-    
-    st.success("🎉 Başarıyla giriş yapıldı!")
-    st.balloons()
+    # Ana sayfa içeriği veya yönlendirme burada olabilir
+    st.info("👈 Lütfen başlamak için kenar çubuğundan bir sayfa seçin.")
 
 elif st.session_state.get("authentication_status") is False:
     st.error('Kullanıcı adı/şifre hatalı')
 
 elif st.session_state.get("authentication_status") is None:
+    initialize_session_state_defaults()
     st.warning('Lütfen kullanıcı adı ve şifrenizi girin')
