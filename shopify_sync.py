@@ -945,6 +945,7 @@ def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sento
     except Exception as e:
         logging.critical(f"Senkronizasyon görevi kritik bir hata oluştu: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
+        raise 
 
 def sync_single_product_by_sku(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, sku):
     try:
