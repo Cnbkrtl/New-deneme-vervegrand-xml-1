@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (StreamlitAPIException Hatası Düzeltilmiş Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py (StreamlitAPIException Hatası Kesin Düzeltilmiş Sürüm)
 
 import streamlit as st
 import pandas as pd
@@ -157,7 +157,8 @@ if st.session_state.price_df is not None or st.session_state.calculated_df is no
         if c4.button("💰 Fiyatları Hesapla", type="primary", use_container_width=True):
             df = st.session_state.price_df.copy() if st.session_state.price_df is not None else st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']].copy()
             
-            # <<< DÜZELTME: Bu satır kaldırıldı. >>>
+            # <<< DÜZELTME: HATA VEREN BU SATIR KALDIRILDI / YORUMA ALINDI >>>
+            # Bu atama, widget'a ait state'i manuel değiştirmeye çalıştığı için hataya neden oluyordu.
             # st.session_state.vat_rate = vat_rate
             
             df['SATIS_FIYATI_KDVSIZ'] = df['ALIŞ FİYATI'] * (1 + markup_value / 100) if markup_type == "Yüzde Ekle (%)" else df['ALIŞ FİYATI'] * markup_value
@@ -166,6 +167,7 @@ if st.session_state.price_df is not None or st.session_state.calculated_df is no
             rounding_method_arg = rounding_method_text.replace(" (X9.99)", "").replace("Aşağı", "Aşağı Yuvarla").replace("Yukarı", "Yukarı Yuvarla")
             df['NIHAI_SATIS_FIYATI'] = df['SATIS_FIYATI_KDVLI'].apply(lambda p: apply_rounding(p, rounding_method_arg))
 
+            # KDV oranını, widget'tan gelen 'vat_rate' değişkeninden alıyoruz.
             revenue = df['NIHAI_SATIS_FIYATI'] / (1 + vat_rate / 100) if add_vat else df['NIHAI_SATIS_FIYATI']
             df['KÂR'] = revenue - df['ALIŞ FİYATI']
             df['KÂR ORANI (%)'] = np.divide(df['KÂR'], df['ALIŞ FİYATI'], out=np.zeros_like(df['KÂR']), where=df['ALIŞ FİYATI']!=0) * 100
@@ -187,7 +189,8 @@ if st.session_state.calculated_df is not None:
     with st.expander("Tablo 2: Perakende İndirim Analizi"):
         retail_discount = st.slider("İndirim Oranı (%)", 0, 50, st.session_state.get('retail_discount', 10), 5, key="retail_discount")
         retail_df = df.copy()
-        current_vat_rate = st.session_state.get('vat_rate', 10)
+        # KDV oranını artık session_state'den güvenle okuyabiliriz.
+        current_vat_rate = st.session_state.get('vat_rate', 10) 
         retail_df['İNDİRİM ORANI (%)'] = retail_discount
         retail_df['İNDİRİMLİ SATIŞ FİYATI'] = retail_df['NIHAI_SATIS_FIYATI'] * (1 - retail_discount / 100)
         revenue_after_discount = retail_df['İNDİRİMLİ SATIŞ FİYATI'] / (1 + current_vat_rate / 100)
