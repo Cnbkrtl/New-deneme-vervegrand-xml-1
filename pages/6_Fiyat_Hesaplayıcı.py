@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (Sentos Fiyat Çekme Mantığı Düzeltilmiş Nihai Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py (StreamlitAPIException Hatası Düzeltilmiş Sürüm)
 
 import streamlit as st
 import pandas as pd
@@ -31,13 +31,10 @@ if not st.session_state.get("authentication_status"):
 load_css()
 
 # --- YARDIMCI FONKSİYONLAR ---
-
-# <<< DÜZELTME BAŞLANGICI: ESKİ VE ÇALIŞAN FONKSİYON ENTEGRE EDİLDİ >>>
 def process_sentos_product_list(product_list):
     """
     Sentos'tan gelen ham ürün listesini işleyerek fiyatlandırma için temiz bir DataFrame'e dönüştürür.
     API'den gelen gerçek alan adlarını ('AlisFiyati', 'Varyasyonlar' vb.) kullanır.
-    Eski, stabil çalışan versiyondur.
     """
     processed_rows = []
     varyant_sayisi = 0
@@ -68,7 +65,6 @@ def process_sentos_product_list(product_list):
                 except (ValueError, TypeError):
                     variant_purchase_price = 0.0
                 
-                # Varyantın kendi fiyatı varsa onu, yoksa ana ürün fiyatını kullan
                 final_price = variant_purchase_price if variant_purchase_price > 0 else main_purchase_price
                 
                 variant_attributes = [val for val in v.get('Ozellikler', {}).values() if val]
@@ -83,7 +79,6 @@ def process_sentos_product_list(product_list):
                 
     st.info(f"{varyantsiz_sayisi} adet tekil ve {varyant_sayisi} adet varyant olmak üzere toplam {len(processed_rows)} satır işlendi.")
     return pd.DataFrame(processed_rows)
-# <<< DÜZELTME SONU >>>
 
 def apply_rounding(price, method):
     """Fiyat yuvarlama mantığını uygular."""
@@ -119,7 +114,6 @@ if st.session_state.calculated_df is None and st.session_state.price_df is None:
                 progress_bar = st.progress(0, text="Sentos API'ye bağlanılıyor...")
                 
                 def progress_callback(update):
-                    """API'den gelen ilerleme verisini arayüzde gösterir."""
                     progress = update.get('progress', 0)
                     message = update.get('message', 'Veriler işleniyor...')
                     progress_bar.progress(progress / 100.0, text=message)
@@ -162,11 +156,13 @@ if st.session_state.price_df is not None or st.session_state.calculated_df is no
         
         if c4.button("💰 Fiyatları Hesapla", type="primary", use_container_width=True):
             df = st.session_state.price_df.copy() if st.session_state.price_df is not None else st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']].copy()
-            st.session_state.vat_rate = vat_rate
+            
+            # <<< DÜZELTME: Bu satır kaldırıldı. >>>
+            # st.session_state.vat_rate = vat_rate
+            
             df['SATIS_FIYATI_KDVSIZ'] = df['ALIŞ FİYATI'] * (1 + markup_value / 100) if markup_type == "Yüzde Ekle (%)" else df['ALIŞ FİYATI'] * markup_value
             df['SATIS_FIYATI_KDVLI'] = df['SATIS_FIYATI_KDVSIZ'] * (1 + vat_rate / 100) if add_vat else df['SATIS_FIYATI_KDVSIZ']
             
-            # Yuvarlama metni argümana dönüştürülüyor
             rounding_method_arg = rounding_method_text.replace(" (X9.99)", "").replace("Aşağı", "Aşağı Yuvarla").replace("Yukarı", "Yukarı Yuvarla")
             df['NIHAI_SATIS_FIYATI'] = df['SATIS_FIYATI_KDVLI'].apply(lambda p: apply_rounding(p, rounding_method_arg))
 
