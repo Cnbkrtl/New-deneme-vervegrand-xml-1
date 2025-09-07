@@ -278,9 +278,16 @@ if st.session_state.calculated_df is not None:
     with col2:
         update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
         if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary"):
-            with st.spinner("Varyant fiyatları hazırlanıyor ve Shopify ile eşleştiriliyor..."):
+            
+            # <<< GÜNCELLEME BAŞLANGICI: Spinner yerine Progress Bar >>>
+            progress_bar = st.progress(0, text="Güncelleme işlemi başlatılıyor...")
+            def update_progress(data):
+                progress_bar.progress(data['progress'] / 100.0, text=data['message'])
+
+            try:
                 shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
                 
+                # ... (df_to_send oluşturma mantığı aynı)
                 if update_choice == "Ana Fiyatlar":
                     prices_to_apply = df[['MODEL KODU', 'NIHAI_SATIS_FIYATI']].rename(columns={'MODEL KODU': 'base_sku'})
                     df_to_send = pd.merge(st.session_state.df_variants, prices_to_apply, on='base_sku', how='left')
@@ -290,6 +297,7 @@ if st.session_state.calculated_df is not None:
                     df_to_send = pd.merge(st.session_state.df_variants, prices_to_apply, on='base_sku', how='left')
                     price_col, compare_at_price_col = 'İNDİRİMLİ SATIŞ FİYATI', 'NIHAI_SATIS_FIYATI'
 
+                update_progress({'progress': 5, 'message': 'Varyantlar Shopify ile eşleştiriliyor...'})
                 skus_to_update = df_to_send['MODEL KODU'].dropna().astype(str).tolist()
                 variant_map = shopify_api.get_variant_ids_by_skus(skus_to_update)
                 
@@ -300,17 +308,21 @@ if st.session_state.calculated_df is not None:
                         payload = {"variant_id": variant_map[sku], "price": f"{row[price_col]:.2f}"}
                         if compare_at_price_col and row[compare_at_price_col] is not None:
                             payload["compare_at_price"] = f"{row[compare_at_price_col]:.2f}"
-                        else:
-                            payload["compare_at_price"] = None
                         updates.append(payload)
 
-            if updates:
-                st.info(f"{len(updates)} varyantın fiyatı Shopify'a güncelleniyor...")
-                with st.spinner("Fiyatlar güncelleniyor..."):
-                    results = shopify_api.bulk_update_variant_prices(updates)
-                st.success(f"İşlem Tamamlandı! ✅ {results.get('success', 0)} varyant başarıyla güncellendi.")
-                if results.get('failed', 0) > 0:
-                    st.error(f"❌ {results.get('failed', 0)} varyant güncellenirken hata oluştu.")
-                    with st.expander("Hata Detayları"): st.json(results.get('errors', []))
-            else:
-                st.warning("Shopify'da eşleşen ve güncellenecek varyant bulunamadı.")
+                if updates:
+                    st.info(f"{len(updates)} varyantın fiyatı Shopify'a güncelleniyor...")
+                    # Yeni bulk update fonksiyonu callback ile çağrılıyor
+                    results = shopify_api.bulk_update_variant_prices(updates, progress_callback=update_progress)
+                    
+                    st.success(f"İşlem Tamamlandı! ✅ {results.get('success', 0)} varyant başarıyla güncellendi.")
+                    if results.get('failed', 0) > 0:
+                        st.error(f"❌ {results.get('failed', 0)} varyant güncellenirken hata oluştu.")
+                        with st.expander("Hata Detayları"): st.json(results.get('errors', []))
+                else:
+                    st.warning("Shopify'da eşleşen ve güncellenecek varyant bulunamadı.")
+            except Exception as e:
+                st.error(f"Güncelleme sırasında bir hata oluştu: {e}")
+            finally:
+                if 'progress_bar' in locals():
+                    progress_bar.empty()

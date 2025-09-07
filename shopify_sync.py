@@ -392,53 +392,100 @@ class ShopifyAPI:
         return sku_map
     # <<< GÜNCELLEME SONU >>>
 
-    def bulk_update_variant_prices(self, price_updates: list) -> dict:
+    def bulk_update_variant_prices(self, price_updates: list, progress_callback=None) -> dict:
         if not price_updates:
             return {"success": 0, "failed": 0, "errors": []}
 
-        results = {"success": 0, "failed": 0, "errors": []}
+        # 1. Adım: JSONL dosyasını hafızada oluştur
+        if progress_callback: progress_callback({'progress': 10, 'message': 'Güncelleme dosyası hazırlanıyor...'})
+        jsonl_data = ""
+        for update in price_updates:
+            price_input = {"id": update["variant_id"], "price": update["price"]}
+            if "compare_at_price" in update:
+                price_input["compareAtPrice"] = update["compare_at_price"]
+            jsonl_data += json.dumps({"input": price_input}) + "\n"
         
-        def update_single_variant(update_data):
-            variant_id = update_data.get("variant_id")
-            price_input = {
-                "id": variant_id,
-                "price": update_data.get("price")
-            }
-            if "compare_at_price" in update_data:
-                 price_input["compareAtPrice"] = update_data.get("compare_at_price")
+        jsonl_bytes = jsonl_data.encode('utf-8')
 
-            mutation = """
-            mutation VariantPriceUpdate($input: ProductVariantInput!) {
-              productVariantUpdate(input: $input) {
-                productVariant {
-                  id
+        # 2. Adım: Shopify'dan dosya yükleme URL'si al
+        if progress_callback: progress_callback({'progress': 25, 'message': 'Shopify yükleme alanı hazırlanıyor...'})
+        upload_mutation = """
+        mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
+            stagedUploadsCreate(input: $input) {
+                stagedTargets {
+                    url
+                    resourceUrl
+                    parameters { name value }
                 }
-                userErrors {
-                  field
-                  message
+                userErrors { field message }
+            }
+        }
+        """
+        upload_vars = {
+            "input": {
+                "resource": "BULK_MUTATION_VARIABLES",
+                "filename": "price_updates.jsonl",
+                "mimeType": "application/jsonl",
+                "httpMethod": "POST"
+            }
+        }
+        upload_result = self.execute_graphql(upload_mutation, upload_vars)
+        target = upload_result["stagedUploadsCreate"]["stagedTargets"][0]
+        upload_url = target["url"]
+        staged_resource_url = target["resourceUrl"]
+
+        # 3. Adım: Dosyayı Shopify'a yükle
+        if progress_callback: progress_callback({'progress': 40, 'message': 'Veriler Shopify\'a yükleniyor...'})
+        upload_headers = {'Content-Type': 'application/jsonl'}
+        self._make_request("POST", upload_url, data=jsonl_bytes, headers=upload_headers)
+
+        # 4. Adım: Toplu işlemi başlat
+        if progress_callback: progress_callback({'progress': 55, 'message': 'Toplu güncelleme işlemi başlatılıyor...'})
+        bulk_mutation = f"""
+        mutation {{
+            bulkOperationRunMutation(
+                mutation: "mutation call($input: ProductVariantInput!) {{ productVariantUpdate(input: $input) {{ productVariant {{ id }} userErrors {{ field message }} }} }}",
+                stagedUploadPath: "{staged_resource_url}"
+            ) {{
+                bulkOperation {{
+                    id
+                    status
+                }}
+                userErrors {{
+                    field
+                    message
+                }}
+            }}
+        }}
+        """
+        bulk_result = self.execute_graphql(bulk_mutation)
+        bulk_op = bulk_result["bulkOperationRunMutation"]["bulkOperation"]
+        
+        # 5. Adım: İşlem tamamlanana kadar durumu kontrol et (Polling)
+        while bulk_op["status"] in ["CREATED", "RUNNING"]:
+            if progress_callback: progress_callback({'progress': 75, 'message': f'Shopify işlemi yürütüyor... (Durum: {bulk_op["status"]})'})
+            time.sleep(5) # 5 saniyede bir kontrol et
+            status_query = """
+            query {
+                currentBulkOperation {
+                    id
+                    status
+                    errorCode
+                    objectCount
                 }
-              }
             }
             """
-            try:
-                response = self.execute_graphql(mutation, {"input": price_input})
-                if response.get("productVariantUpdate", {}).get("userErrors"):
-                    errors = response["productVariantUpdate"]["userErrors"]
-                    raise Exception(str(errors))
-                return True
-            except Exception as e:
-                results["errors"].append(f"Variant {variant_id}: {e}")
-                return False
+            status_result = self.execute_graphql(status_query)
+            bulk_op = status_result["currentBulkOperation"]
 
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(update_single_variant, update) for update in price_updates]
-            for future in as_completed(futures):
-                if future.result():
-                    results["success"] += 1
-                else:
-                    results["failed"] += 1
-        
-        return results
+        if progress_callback: progress_callback({'progress': 100, 'message': 'İşlem tamamlandı!'})
+
+        if bulk_op["status"] == "COMPLETED":
+            count = int(bulk_op.get("objectCount", len(price_updates)))
+            return {"success": count, "failed": 0, "errors": []}
+        else:
+            error = f"Toplu işlem başarısız oldu. Durum: {bulk_op['status']}, Hata Kodu: {bulk_op.get('errorCode')}"
+            return {"success": 0, "failed": len(price_updates), "errors": [error]}
 
 # ... (SentosAPI ve diğer sınıflar/fonksiyonlar değişmeden kalır) ...
 class SentosAPI:
