@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (Nihai Sürüm - Sadece Ana Ürünleri Doğru Anahtarlarla Listeler)
+# pages/6_Fiyat_Hesaplayıcı.py (Shopify Güncellemesi İçin Varyant Bazlı Çalışan Nihai Sürüm)
 
 import streamlit as st
 import pandas as pd
@@ -32,32 +32,58 @@ load_css()
 
 # --- YARDIMCI FONKSİYONLAR ---
 
-# <<< NİHAİ DÜZELTME: Fonksiyon artık sadece ana ürünleri ve doğru anahtarları kullanıyor >>>
+# <<< NİHAİ DÜZELTME: Fonksiyon, Shopify güncellemesi için artık tüm varyantları listeliyor >>>
 def process_sentos_product_list(product_list):
     """
-    Sentos'tan gelen ürün listesini işleyerek, her ana ürün için tek bir satır oluşturur.
-    Ürünlerin içindeki 'variants' dizisi tamamen göz ardı edilir ve 'purchase_price' anahtarı kullanılır.
+    Sentos'tan gelen ürün listesini işleyerek, varyantı olmayan ürünleri ve
+    tüm varyantları ayrı birer satır olarak içeren bir liste oluşturur.
+    Bu, Shopify'a fiyat göndermek için zorunludur.
     """
     processed_rows = []
     
-    # Gelen liste ana ürünleri içerir. Her bir ana ürün için tek bir satır oluşturalım.
     for p in product_list:
         try:
-            # Doğru anahtar 'purchase_price' olarak eski koddan teyit edildi.
-            purchase_price_str = str(p.get('purchase_price', '0')).replace(',', '.')
-            purchase_price = float(purchase_price_str)
+            main_price_str = str(p.get('purchase_price') or p.get('AlisFiyati') or '0').replace(',', '.')
+            main_purchase_price = float(main_price_str)
         except (ValueError, TypeError):
-            purchase_price = 0.0
+            main_purchase_price = 0.0
 
-        # Sadece ana ürünün bilgilerini al ve listeye ekle.
-        # Varyantlar (p.get('variants')) bu kısımda tamamen yok sayılır.
-        processed_rows.append({
-            'MODEL KODU': p.get('sku'),
-            'ÜRÜN ADI': p.get('name'),
-            'ALIŞ FİYATI': purchase_price
-        })
+        variants = p.get('variants', [])
+        
+        # Eğer ürünün varyantı yoksa, ana ürünü bir satır olarak ekle
+        if not variants:
+            processed_rows.append({
+                'MODEL KODU': p.get('sku'),
+                'ÜRÜN ADI': p.get('name'),
+                'ALIŞ FİYATI': main_purchase_price
+            })
+        # Eğer varyantları varsa, her bir varyantı ayrı bir satır olarak ekle
+        else:
+            for v in variants:
+                try:
+                    variant_price_str = str(v.get('purchase_price') or v.get('AlisFiyati') or '0').replace(',', '.')
+                    variant_purchase_price = float(variant_price_str)
+                except (ValueError, TypeError):
+                    variant_purchase_price = 0.0
                 
-    st.info(f"Toplam {len(processed_rows)} ana ürün işlendi.")
+                # Varyantın kendi fiyatı varsa onu, yoksa ana ürünün fiyatını kullan
+                final_price = variant_purchase_price if variant_purchase_price > 0 else main_purchase_price
+                
+                # Varyant adını oluştur
+                color = v.get('color', '').strip()
+                model_data = v.get('model', '')
+                size = (model_data.get('value', '') if isinstance(model_data, dict) else str(model_data)).strip()
+                attributes = [attr for attr in [color, size] if attr]
+                suffix = " - " + " / ".join(attributes) if attributes else ""
+                variant_name = f"{p.get('name', '')}{suffix}".strip()
+
+                processed_rows.append({
+                    'MODEL KODU': v.get('sku'),
+                    'ÜRÜN ADI': variant_name,
+                    'ALIŞ FİYATI': final_price
+                })
+                
+    st.info(f"Toplam {len(processed_rows)} ürün/varyant satırı işlendi.")
     return pd.DataFrame(processed_rows)
 # <<< NİHAİ DÜZELTME SONU >>>
 
@@ -235,7 +261,7 @@ if st.session_state.calculated_df is not None:
                 
                 updates = []
                 for _, row in df_to_send.iterrows():
-                    sku = row['MODEL KODU']
+                    sku = str(row['MODEL KODU'])
                     if sku in variant_map:
                         update_payload = {"variant_id": variant_map[sku], "price": f"{row[price_col]:.2f}"}
                         if compare_at_price_col and row[compare_at_price_col] is not None:
