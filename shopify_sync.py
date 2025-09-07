@@ -382,7 +382,6 @@ class ShopifyAPI:
     def bulk_update_variant_prices(self, price_updates: list) -> dict:
         """
         Verilen varyant listesinin fiyat ve karşılaştırma fiyatını toplu olarak günceller.
-        price_updates formatı: [{'variant_id': GID, 'price': '100.00', 'compare_at_price': '150.00' or None}, ...]
         """
         if not price_updates:
             return {"success": 0, "failed": 0, "errors": []}
@@ -395,12 +394,13 @@ class ShopifyAPI:
                 "id": variant_id,
                 "price": update_data.get("price")
             }
-            # compare_at_price None ise, GraphQL'e bu alanı hiç göndermeyiz veya null olarak göndeririz.
             if "compare_at_price" in update_data:
                  price_input["compareAtPrice"] = update_data.get("compare_at_price")
 
+            # GraphQL sorgusuna, Shopify'ın doğru yorumlaması için keyfi bir operasyon adı ("VariantPriceUpdate") eklendi.
+            # Bu, sorgunun geri kalanını veya başka bir fonksiyonu etkilemez.
             mutation = """
-            mutation productVariantUpdate($input: ProductVariantInput!) {
+            mutation VariantPriceUpdate($input: ProductVariantInput!) {
               productVariantUpdate(input: $input) {
                 productVariant {
                   id
