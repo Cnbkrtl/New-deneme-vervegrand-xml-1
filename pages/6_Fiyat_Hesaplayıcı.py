@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (StreamlitAPIException Hatası Kesin Düzeltilmiş Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py (API Anahtar İsimleri Düzeltilmiş Sürüm)
 
 import streamlit as st
 import pandas as pd
@@ -31,10 +31,12 @@ if not st.session_state.get("authentication_status"):
 load_css()
 
 # --- YARDIMCI FONKSİYONLAR ---
+
+# <<< DÜZELTME BAŞLANGICI: Fonksiyon, shopify_sync.py ile uyumlu hale getirildi >>>
 def process_sentos_product_list(product_list):
     """
-    Sentos'tan gelen ham ürün listesini işleyerek fiyatlandırma için temiz bir DataFrame'e dönüştürür.
-    API'den gelen gerçek alan adlarını ('AlisFiyati', 'Varyasyonlar' vb.) kullanır.
+    Sentos'tan gelen ham ürün listesini, uygulamanın genelinde kullanılan
+    İngilizce anahtarlara ('name', 'sku', 'variants') göre işler.
     """
     processed_rows = []
     varyant_sayisi = 0
@@ -42,18 +44,20 @@ def process_sentos_product_list(product_list):
 
     for p in product_list:
         try:
+            # Alış fiyatı anahtarının 'AlisFiyati' olarak kaldığı varsayılıyor
             main_purchase_price_str = str(p.get('AlisFiyati', '0')).replace(',', '.')
             main_purchase_price = float(main_purchase_price_str)
         except (ValueError, TypeError):
             main_purchase_price = 0.0
 
-        variants = p.get('Varyasyonlar', [])
+        # Anahtar 'Varyasyonlar' yerine 'variants' olarak değiştirildi
+        variants = p.get('variants', [])
         
         if not variants:
             varyantsiz_sayisi += 1
             processed_rows.append({
-                'MODEL KODU': p.get('StokKodu'), 
-                'ÜRÜN ADI': p.get('UrunAdi'), 
+                'MODEL KODU': p.get('sku'),       # Anahtar 'StokKodu' yerine 'sku' oldu
+                'ÜRÜN ADI': p.get('name'),         # Anahtar 'UrunAdi' yerine 'name' oldu
                 'ALIŞ FİYATI': main_purchase_price
             })
         else:
@@ -67,18 +71,29 @@ def process_sentos_product_list(product_list):
                 
                 final_price = variant_purchase_price if variant_purchase_price > 0 else main_purchase_price
                 
-                variant_attributes = [val for val in v.get('Ozellikler', {}).values() if val]
-                variant_name_suffix = " - " + " / ".join(variant_attributes) if variant_attributes else ""
-                variant_name = f"{p.get('UrunAdi', '')}{variant_name_suffix}".strip()
+                # Varyant adı oluşturma mantığı shopify_sync.py'ye uyarlandı
+                color = v.get('color', '').strip()
+                model_data = v.get('model', '') # 'model' bedeni tutuyor
+                size = (model_data.get('value', '') if isinstance(model_data, dict) else str(model_data)).strip()
+
+                attributes = []
+                if color: attributes.append(color)
+                if size: attributes.append(size)
+                
+                suffix = " - " + " / ".join(attributes) if attributes else ""
+                product_name = p.get('name', '') # Ana ürün adını al
+                variant_name = f"{product_name}{suffix}".strip()
 
                 processed_rows.append({
-                    'MODEL KODU': v.get('StokKodu'), 
+                    'MODEL KODU': v.get('sku'), 
                     'ÜRÜN ADI': variant_name, 
                     'ALIŞ FİYATI': final_price
                 })
                 
     st.info(f"{varyantsiz_sayisi} adet tekil ve {varyant_sayisi} adet varyant olmak üzere toplam {len(processed_rows)} satır işlendi.")
     return pd.DataFrame(processed_rows)
+# <<< DÜZELTME SONU >>>
+
 
 def apply_rounding(price, method):
     """Fiyat yuvarlama mantığını uygular."""
@@ -119,11 +134,18 @@ if st.session_state.calculated_df is None and st.session_state.price_df is None:
                     progress_bar.progress(progress / 100.0, text=message)
 
                 all_products = sentos_api.get_all_products(progress_callback=progress_callback)
-                progress_bar.progress(100, text="Veriler DataFrame'e dönüştürülüyor...")
-                st.session_state.price_df = process_sentos_product_list(all_products)
-                progress_bar.empty()
+                progress_bar.progress(100, text="Veriler işleniyor...")
 
-                st.toast(f"{len(st.session_state.price_df)} ürün için alış fiyatları çekildi."); st.rerun()
+                if not all_products:
+                    st.error("❌ Sentos API'den hiç ürün verisi gelmedi. Lütfen API ayarlarınızı kontrol edin.")
+                    progress_bar.empty()
+                else:
+                    st.session_state.price_df = process_sentos_product_list(all_products)
+                    progress_bar.empty()
+                    if st.session_state.price_df.empty or st.session_state.price_df['MODEL KODU'].isnull().all():
+                         st.warning("Veri işlendi ancak model kodu, ürün adı gibi temel bilgiler alınamadı. Lütfen API yanıtını ve anahtar isimlerini kontrol edin.")
+                    else:
+                         st.toast(f"{len(st.session_state.price_df)} ürün için alış fiyatları başarıyla çekildi."); st.rerun()
 
             except Exception as e: 
                 st.error(f"API hatası: {e}")
@@ -156,10 +178,6 @@ if st.session_state.price_df is not None or st.session_state.calculated_df is no
         
         if c4.button("💰 Fiyatları Hesapla", type="primary", use_container_width=True):
             df = st.session_state.price_df.copy() if st.session_state.price_df is not None else st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']].copy()
-            
-            # <<< DÜZELTME: HATA VEREN BU SATIR KALDIRILDI / YORUMA ALINDI >>>
-            # Bu atama, widget'a ait state'i manuel değiştirmeye çalıştığı için hataya neden oluyordu.
-            # st.session_state.vat_rate = vat_rate
             
             df['SATIS_FIYATI_KDVSIZ'] = df['ALIŞ FİYATI'] * (1 + markup_value / 100) if markup_type == "Yüzde Ekle (%)" else df['ALIŞ FİYATI'] * markup_value
             df['SATIS_FIYATI_KDVLI'] = df['SATIS_FIYATI_KDVSIZ'] * (1 + vat_rate / 100) if add_vat else df['SATIS_FIYATI_KDVSIZ']
