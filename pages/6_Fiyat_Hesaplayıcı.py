@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (API Anahtar İsimleri Düzeltilmiş Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py (Esnek Alış Fiyatı Okuma Eklendi)
 
 import streamlit as st
 import pandas as pd
@@ -32,65 +32,31 @@ load_css()
 
 # --- YARDIMCI FONKSİYONLAR ---
 
-# <<< DÜZELTME BAŞLANGICI: Fonksiyon, shopify_sync.py ile uyumlu hale getirildi >>>
+# <<< DÜZELTME BAŞLANGICI: Fonksiyon artık birden fazla olası alış fiyatı anahtarını kontrol ediyor >>>
 def process_sentos_product_list(product_list):
     """
-    Sentos'tan gelen ham ürün listesini, uygulamanın genelinde kullanılan
-    İngilizce anahtarlara ('name', 'sku', 'variants') göre işler.
+    Sentos'tan gelen ürün listesini işleyerek, her ana ürün için tek bir satır oluşturur.
+    Alış fiyatı için 'purchase_price', 'AlisFiyati' ve 'cost' anahtarlarını sırayla kontrol eder.
     """
     processed_rows = []
-    varyant_sayisi = 0
-    varyantsiz_sayisi = 0
-
+    
     for p in product_list:
         try:
-            # Alış fiyatı anahtarının 'AlisFiyati' olarak kaldığı varsayılıyor
-            main_purchase_price_str = str(p.get('AlisFiyati', '0')).replace(',', '.')
-            main_purchase_price = float(main_purchase_price_str)
+            # Olası alış fiyatı anahtarlarını sırayla dene
+            price_str = p.get('purchase_price') or p.get('AlisFiyati') or p.get('cost') or '0'
+            purchase_price_str = str(price_str).replace(',', '.')
+            purchase_price = float(purchase_price_str)
         except (ValueError, TypeError):
-            main_purchase_price = 0.0
+            purchase_price = 0.0
 
-        # Anahtar 'Varyasyonlar' yerine 'variants' olarak değiştirildi
-        variants = p.get('variants', [])
-        
-        if not variants:
-            varyantsiz_sayisi += 1
-            processed_rows.append({
-                'MODEL KODU': p.get('sku'),       # Anahtar 'StokKodu' yerine 'sku' oldu
-                'ÜRÜN ADI': p.get('name'),         # Anahtar 'UrunAdi' yerine 'name' oldu
-                'ALIŞ FİYATI': main_purchase_price
-            })
-        else:
-            for v in variants:
-                varyant_sayisi += 1
-                try:
-                    variant_price_str = str(v.get('AlisFiyati', '0')).replace(',', '.')
-                    variant_purchase_price = float(variant_price_str) if variant_price_str else 0.0
-                except (ValueError, TypeError):
-                    variant_purchase_price = 0.0
+        # Ana ürün bilgilerini içeren bir sözlük oluştur ve listeye ekle
+        processed_rows.append({
+            'MODEL KODU': p.get('sku'),       # Ana ürünün SKU'su
+            'ÜRÜN ADI': p.get('name'),         # Ana ürünün Adı
+            'ALIŞ FİYATI': purchase_price     # Bulunan ilk geçerli Alış Fiyatı
+        })
                 
-                final_price = variant_purchase_price if variant_purchase_price > 0 else main_purchase_price
-                
-                # Varyant adı oluşturma mantığı shopify_sync.py'ye uyarlandı
-                color = v.get('color', '').strip()
-                model_data = v.get('model', '') # 'model' bedeni tutuyor
-                size = (model_data.get('value', '') if isinstance(model_data, dict) else str(model_data)).strip()
-
-                attributes = []
-                if color: attributes.append(color)
-                if size: attributes.append(size)
-                
-                suffix = " - " + " / ".join(attributes) if attributes else ""
-                product_name = p.get('name', '') # Ana ürün adını al
-                variant_name = f"{product_name}{suffix}".strip()
-
-                processed_rows.append({
-                    'MODEL KODU': v.get('sku'), 
-                    'ÜRÜN ADI': variant_name, 
-                    'ALIŞ FİYATI': final_price
-                })
-                
-    st.info(f"{varyantsiz_sayisi} adet tekil ve {varyant_sayisi} adet varyant olmak üzere toplam {len(processed_rows)} satır işlendi.")
+    st.info(f"Toplam {len(processed_rows)} ana ürün işlendi.")
     return pd.DataFrame(processed_rows)
 # <<< DÜZELTME SONU >>>
 
@@ -252,28 +218,40 @@ if st.session_state.calculated_df is not None:
         if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary"):
             shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
             
+            # Shopify'a gönderilecek SKU'lar ana ürün SKU'ları olmalı.
+            # Ancak fiyat güncellemesi varyant bazlı yapılır. Bu kısım ileride detaylandırılabilir.
+            # Şimdilik, eğer ana ürün SKU'su varyant SKU'su ile aynıysa çalışacaktır.
             if update_choice == "Ana Fiyatlar":
-                df_to_send = main_df_display; price_col = 'NIHAI_SATIS_FIYATI'; compare_at_price_col = None
+                df_to_send = main_df_display
+                price_col = 'NIHAI_SATIS_FIYATI'
+                compare_at_price_col = None
             else:
-                df_to_send = discount_df_display; price_col = 'İNDİRİMLİ SATIŞ FİYATI'; compare_at_price_col = 'NIHAI_SATIS_FIYATI'
-            st.info(f"{len(df_to_send)} ürünün fiyatı Shopify'a güncelleniyor...")
+                df_to_send = discount_df_display
+                price_col = 'İNDİRİMLİ SATIŞ FİYATI'
+                compare_at_price_col = 'NIHAI_SATIS_FIYATI'
+
+            st.info(f"{len(df_to_send)} ürünün fiyatı Shopify'a güncellenmek üzere hazırlanıyor...")
             with st.spinner("Varyant ID'leri alınıyor ve güncellemeler hazırlanıyor..."):
                 skus_to_update = df_to_send['MODEL KODU'].dropna().tolist()
                 variant_map = shopify_api.get_variant_ids_by_skus(skus_to_update)
+                
                 updates = []
                 for _, row in df_to_send.iterrows():
                     sku = row['MODEL KODU']
                     if sku in variant_map:
                         update_payload = {"variant_id": variant_map[sku], "price": f"{row[price_col]:.2f}"}
-                        if compare_at_price_col: update_payload["compare_at_price"] = f"{row[compare_at_price_col]:.2f}"
-                        else: update_payload["compare_at_price"] = None
+                        if compare_at_price_col and row[compare_at_price_col] is not None:
+                            update_payload["compare_at_price"] = f"{row[compare_at_price_col]:.2f}"
+                        else:
+                            update_payload["compare_at_price"] = None
                         updates.append(update_payload)
+
             if updates:
-                with st.spinner(f"{len(updates)} ürün fiyatı güncelleniyor..."):
+                with st.spinner(f"{len(updates)} ürün fiyatı Shopify'a gönderiliyor..."):
                     results = shopify_api.bulk_update_variant_prices(updates)
                 st.success(f"İşlem Tamamlandı! ✅ {results.get('success', 0)} ürün başarıyla güncellendi.")
                 if results.get('failed', 0) > 0:
                     st.error(f"❌ {results.get('failed', 0)} ürün güncellenirken hata oluştu.")
                     with st.expander("Hata Detayları"): st.json(results.get('errors', []))
             else:
-                st.warning("Shopify'da eşleşen güncellenecek ürün bulunamadı.")
+                st.warning("Shopify'da eşleşen ve güncellenecek ürün bulunamadı. Model kodlarının Shopify'daki SKU'lar ile eşleştiğinden emin olun.")
