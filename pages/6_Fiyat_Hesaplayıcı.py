@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (Tüm Özellikler Birleştirilmiş Nihai Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py (Doğru Ana Ürün Gruplama Mantığı)
 
 import streamlit as st
 import pandas as pd
@@ -14,7 +14,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shopify_sync import ShopifyAPI, SentosAPI
 import gsheets_manager 
-import data_manager # <<< ÖZELLİK EKLENDİ: Yerel kayıt için eklendi
+import data_manager
 
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():
@@ -33,57 +33,72 @@ load_css()
 
 
 # --- YARDIMCI FONKSİYONLAR ---
-def get_base_code_from_sku(sku):
-    if not sku or not isinstance(sku, str):
-        return None
-    return sku.split('-', 1)[0]
-
-def get_base_name(product_name):
-    if not product_name or not isinstance(product_name, str):
-        return "İsimsiz Ürün"
-    return product_name.split(' - ')[0].strip()
-
+# <<< DÜZELTME BAŞLANGICI: Fonksiyon, SKU tahmin etmek yerine doğrudan ana ürün verisini kullanıyor >>>
 def process_sentos_data(product_list):
+    """
+    Sentos'tan gelen ürün listesini işler. Ana ürünleri doğrudan sayar ve
+    varyantları bu ana ürünlerle ilişkilendirir. Bu, en doğru gruplama yöntemidir.
+    """
     all_variants_rows = []
-    
+    main_products_rows = []
+
     for p in product_list:
-        main_price_str = str(p.get('purchase_price') or p.get('AlisFiyati') or '0').replace(',', '.')
-        main_purchase_price = float(main_price_str) if main_price_str else 0.0
+        # Ana ürün bilgilerini al
+        main_sku = p.get('sku')
+        main_name = p.get('name')
+        try:
+            main_price_str = str(p.get('purchase_price') or p.get('AlisFiyati') or '0').replace(',', '.')
+            main_purchase_price = float(main_price_str)
+        except (ValueError, TypeError):
+            main_purchase_price = 0.0
+
+        # Ana ürünü, gösterge listesi için ekle
+        main_products_rows.append({
+            'MODEL KODU': main_sku,
+            'ÜRÜN ADI': main_name,
+            'ALIŞ FİYATI': main_purchase_price
+        })
 
         variants = p.get('variants', [])
         
+        # Eğer ürünün varyantı yoksa, kendisini teknik listeye de ekle
         if not variants:
-            base_sku = p.get('sku')
             all_variants_rows.append({
-                'base_sku': base_sku, 'MODEL KODU': base_sku,
-                'ÜRÜN ADI': p.get('name'), 'ALIŞ FİYATI': main_purchase_price
+                'base_sku': main_sku,
+                'MODEL KODU': main_sku,
+                'ÜRÜN ADI': main_name,
+                'ALIŞ FİYATI': main_purchase_price
             })
+        # Eğer varyantları varsa, her bir varyantı ana SKU ile ilişkilendirerek ekle
         else:
             for v in variants:
-                variant_price_str = str(v.get('purchase_price') or v.get('AlisFiyati') or '0').replace(',', '.')
-                variant_purchase_price = float(variant_price_str) if variant_price_str else 0.0
+                try:
+                    variant_price_str = str(v.get('purchase_price') or v.get('AlisFiyati') or '0').replace(',', '.')
+                    variant_purchase_price = float(variant_price_str)
+                except (ValueError, TypeError):
+                    variant_purchase_price = 0.0
+                
                 final_price = variant_purchase_price if variant_purchase_price > 0 else main_purchase_price
-                base_sku = get_base_code_from_sku(v.get('sku')) or p.get('sku')
+                
                 color = v.get('color', '').strip()
                 model_data = v.get('model', '')
                 size = (model_data.get('value', '') if isinstance(model_data, dict) else str(model_data)).strip()
                 attributes = [attr for attr in [color, size] if attr]
                 suffix = " - " + " / ".join(attributes) if attributes else ""
-                variant_name = f"{p.get('name', '')}{suffix}".strip()
+                variant_name = f"{main_name}{suffix}".strip()
+
                 all_variants_rows.append({
-                    'base_sku': base_sku, 'MODEL KODU': v.get('sku'),
-                    'ÜRÜN ADI': variant_name, 'ALIŞ FİYATI': final_price
+                    'base_sku': main_sku,  # Ana ürün SKU'su ile ilişkilendir
+                    'MODEL KODU': v.get('sku'),
+                    'ÜRÜN ADI': variant_name,
+                    'ALIŞ FİYATI': final_price
                 })
     
-    if not all_variants_rows:
-        return pd.DataFrame(), pd.DataFrame()
-
     df_variants = pd.DataFrame(all_variants_rows)
-    df_main_products = df_variants.drop_duplicates(subset=['base_sku'], keep='first').copy()
-    df_main_products['ÜRÜN ADI'] = df_main_products.apply(lambda row: get_base_name(row['ÜRÜN ADI']), axis=1)
-    df_main_products['MODEL KODU'] = df_main_products['base_sku']
+    df_main_products = pd.DataFrame(main_products_rows)
     
-    return df_variants, df_main_products[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']]
+    return df_variants, df_main_products
+# <<< DÜZELTME SONU >>>
 
 
 def apply_rounding(price, method):
@@ -114,28 +129,37 @@ if st.session_state.df_for_display is None:
     col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 Sentos'tan Yeni Fiyat Listesi Çek", use_container_width=True):
-            with st.spinner("Sentos API'den veriler çekiliyor ve işleniyor..."):
-                try:
-                    sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
-                    all_products = sentos_api.get_all_products()
-                    if not all_products:
-                        st.error("❌ Sentos API'den hiç ürün verisi gelmedi.")
-                    else:
-                        df_variants, df_main = process_sentos_data(all_products)
-                        st.session_state.df_variants = df_variants
-                        st.session_state.df_for_display = df_main
-                        
-                        # <<< ÖZELLİK EKLENDİ: Veriyi yerel olarak kaydet
-                        username = st.session_state["username"]
-                        data_manager.save_user_data(username, 
-                                                    df_variants_json=df_variants.to_json(orient='split'),
-                                                    df_for_display_json=df_main.to_json(orient='split'))
-                        st.toast("Veriler çekildi ve yerel olarak kaydedildi.")
-                        st.rerun()
-                except Exception as e: 
-                    st.error(f"API hatası: {e}")
+            progress_bar = st.progress(0, text="Sentos API'ye bağlanılıyor...")
+            
+            def progress_callback(update):
+                progress = update.get('progress', 0)
+                message = update.get('message', 'Veriler işleniyor...')
+                progress_bar.progress(progress / 100.0, text=message)
+            
+            try:
+                sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
+                all_products = sentos_api.get_all_products(progress_callback=progress_callback)
+                
+                progress_bar.progress(100, text="Veriler işleniyor ve gruplanıyor...")
+                if not all_products:
+                    st.error("❌ Sentos API'den hiç ürün verisi gelmedi.")
+                    progress_bar.empty()
+                else:
+                    df_variants, df_main = process_sentos_data(all_products)
+                    st.session_state.df_variants = df_variants
+                    st.session_state.df_for_display = df_main
+                    username = st.session_state["username"]
+                    data_manager.save_user_data(username, 
+                                                df_variants_json=df_variants.to_json(orient='split'),
+                                                df_for_display_json=df_main.to_json(orient='split'))
+                    progress_bar.empty()
+                    st.toast("Veriler çekildi ve yerel olarak kaydedildi.")
+                    st.rerun()
+            except Exception as e: 
+                if 'progress_bar' in locals():
+                    progress_bar.empty()
+                st.error(f"API hatası: {e}")
 
-    # <<< ÖZELLİK EKLENDİ: Yerel ve Google Sheets'ten yükleme butonları
     with col2:
         if st.button("📂 Kayıtlı Veriyi Yerelden Yükle", use_container_width=True):
             with st.spinner("Yerel veriler yükleniyor..."):
@@ -153,8 +177,15 @@ if st.session_state.df_for_display is None:
     
     with col3:
         if st.button("📄 Kayıtlı Veriyi G-Sheets'ten Yükle", use_container_width=True):
-            st.warning("Google Sheets'ten yükleme özelliği şu an pasiftir.")
-            # Google Sheets'ten yükleme mantığı buraya eklenebilir.
+            with st.spinner("Google E-Tablolardan veriler yükleniyor..."):
+                loaded_df = gsheets_manager.load_pricing_data_from_gsheets()
+            if loaded_df is not None and not loaded_df.empty:
+                st.session_state.calculated_df = loaded_df
+                st.session_state.df_for_display = loaded_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']]
+                st.toast("Veriler Google E-Tablolar'dan yüklendi.")
+                st.rerun()
+            else:
+                st.warning("Google E-Tablolar'dan veri yüklenemedi veya dosya boş.")
 
 else:
     count = len(st.session_state.df_for_display)
@@ -163,7 +194,7 @@ else:
         st.session_state.calculated_df = None
         st.session_state.df_for_display = None
         st.session_state.df_variants = None
-        data_manager.delete_user_data(st.session_state["username"]) # Yerel veriyi de sil
+        data_manager.delete_user_data(st.session_state["username"])
         st.rerun()
 
 if st.session_state.df_for_display is not None:
@@ -187,7 +218,6 @@ if st.session_state.df_for_display is not None:
             df['KÂR ORANI (%)'] = np.divide(df['KÂR'], df['ALIŞ FİYATI'], out=np.zeros_like(df['KÂR']), where=df['ALIŞ FİYATI']!=0) * 100
             st.session_state.calculated_df = df
             
-            # <<< ÖZELLİK EKLENDİ: Hesaplanan veriyi yerel olarak kaydet
             username = st.session_state["username"]
             data_manager.save_user_data(username, 
                                         df_variants_json=st.session_state.df_variants.to_json(orient='split'),
@@ -200,7 +230,6 @@ if st.session_state.calculated_df is not None:
     st.markdown("---"); st.subheader("Adım 3: Senaryoları Analiz Et")
     df = st.session_state.calculated_df
     
-    # <<< ÖZELLİK EKLENDİ: Tüm analiz tabloları geri getirildi >>>
     with st.expander("Tablo 1: Ana Fiyat ve Kârlılık Listesi (Referans)", expanded=True):
         main_df_display = df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', 'SATIS_FIYATI_KDVSIZ', 'NIHAI_SATIS_FIYATI', 'KÂR', 'KÂR ORANI (%)']]
         st.dataframe(main_df_display.style.format({
@@ -242,8 +271,9 @@ if st.session_state.calculated_df is not None:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True):
-            st.warning("Google Sheets kaydetme özelliği bu versiyonda pasiftir.")
-            # ...
+            with st.spinner("Veriler Google E-Tablolar'a kaydediliyor..."):
+                success, url = gsheets_manager.save_pricing_data_to_gsheets(main_df_display, discount_df_display, wholesale_df_display)
+            if success: st.success(f"Veriler başarıyla kaydedildi! [E-Tabloyu Görüntüle]({url})")
     
     with col2:
         update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
@@ -251,15 +281,11 @@ if st.session_state.calculated_df is not None:
             with st.spinner("Varyant fiyatları hazırlanıyor ve Shopify ile eşleştiriliyor..."):
                 shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
                 
-                # <<< ÖZELLİK EKLENDİ: İndirimli Fiyat Gönderme Mantığı >>>
                 if update_choice == "Ana Fiyatlar":
-                    # Ana ürünlerin NIHAI_SATIS_FIYATI'nı al
                     prices_to_apply = df[['MODEL KODU', 'NIHAI_SATIS_FIYATI']].rename(columns={'MODEL KODU': 'base_sku'})
-                    # Arka plandaki tüm varyantlarla birleştir
                     df_to_send = pd.merge(st.session_state.df_variants, prices_to_apply, on='base_sku', how='left')
                     price_col, compare_at_price_col = 'NIHAI_SATIS_FIYATI', None
-                else: # İndirimli Fiyatlar
-                    # İndirimli fiyatları içeren `retail_df`'i al
+                else: 
                     prices_to_apply = retail_df[['MODEL KODU', 'NIHAI_SATIS_FIYATI', 'İNDİRİMLİ SATIŞ FİYATI']].rename(columns={'MODEL KODU': 'base_sku'})
                     df_to_send = pd.merge(st.session_state.df_variants, prices_to_apply, on='base_sku', how='left')
                     price_col, compare_at_price_col = 'İNDİRİMLİ SATIŞ FİYATI', 'NIHAI_SATIS_FIYATI'
@@ -272,7 +298,7 @@ if st.session_state.calculated_df is not None:
                     sku = str(row['MODEL KODU'])
                     if sku in variant_map:
                         payload = {"variant_id": variant_map[sku], "price": f"{row[price_col]:.2f}"}
-                        if compare_at_price_col:
+                        if compare_at_price_col and row[compare_at_price_col] is not None:
                             payload["compare_at_price"] = f"{row[compare_at_price_col]:.2f}"
                         else:
                             payload["compare_at_price"] = None
