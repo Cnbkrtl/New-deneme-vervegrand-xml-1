@@ -1,9 +1,11 @@
-# pages/6_Fiyat_Hesaplayıcı.py (İlerleme Göstergesi Düzeltilmiş Nihai Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py (Sentos Fiyat Çekme Mantığı Düzeltilmiş Nihai Sürüm)
 
 import streamlit as st
 import pandas as pd
 import math
 import numpy as np
+import json
+from io import StringIO
 
 # Proje dizinindeki modülleri import et
 import sys
@@ -28,28 +30,60 @@ if not st.session_state.get("authentication_status"):
 
 load_css()
 
-# --- Yardımcı Fonksiyonlar ---
-@st.cache_data
-def process_sentos_product_list(_product_list):
-    """Sentos'tan gelen ürün listesini işleyerek temiz bir DataFrame oluşturur."""
+# --- YARDIMCI FONKSİYONLAR ---
+
+# <<< DÜZELTME BAŞLANGICI: ESKİ VE ÇALIŞAN FONKSİYON ENTEGRE EDİLDİ >>>
+def process_sentos_product_list(product_list):
+    """
+    Sentos'tan gelen ham ürün listesini işleyerek fiyatlandırma için temiz bir DataFrame'e dönüştürür.
+    API'den gelen gerçek alan adlarını ('AlisFiyati', 'Varyasyonlar' vb.) kullanır.
+    Eski, stabil çalışan versiyondur.
+    """
     processed_rows = []
-    for p in _product_list:
-        try: main_price = float(str(p.get('AlisFiyati', '0')).replace(',', '.'))
-        except (ValueError, TypeError): main_price = 0.0
-        
+    varyant_sayisi = 0
+    varyantsiz_sayisi = 0
+
+    for p in product_list:
+        try:
+            main_purchase_price_str = str(p.get('AlisFiyati', '0')).replace(',', '.')
+            main_purchase_price = float(main_purchase_price_str)
+        except (ValueError, TypeError):
+            main_purchase_price = 0.0
+
         variants = p.get('Varyasyonlar', [])
+        
         if not variants:
-            processed_rows.append({'MODEL KODU': p.get('StokKodu'), 'ÜRÜN ADI': p.get('UrunAdi'), 'ALIŞ FİYATI': main_price})
+            varyantsiz_sayisi += 1
+            processed_rows.append({
+                'MODEL KODU': p.get('StokKodu'), 
+                'ÜRÜN ADI': p.get('UrunAdi'), 
+                'ALIŞ FİYATI': main_purchase_price
+            })
         else:
             for v in variants:
-                try: var_price = float(str(v.get('AlisFiyati', '0')).replace(',', '.'))
-                except (ValueError, TypeError): var_price = 0.0
-                final_price = var_price if var_price > 0 else main_price
-                attrs = [val for val in v.get('Ozellikler', {}).values() if val]
-                suffix = " - " + " / ".join(attrs) if attrs else ""
-                name = f"{p.get('UrunAdi', '')}{suffix}".strip()
-                processed_rows.append({'MODEL KODU': v.get('StokKodu'), 'ÜRÜN ADI': name, 'ALIŞ FİYATI': final_price})
+                varyant_sayisi += 1
+                try:
+                    variant_price_str = str(v.get('AlisFiyati', '0')).replace(',', '.')
+                    variant_purchase_price = float(variant_price_str) if variant_price_str else 0.0
+                except (ValueError, TypeError):
+                    variant_purchase_price = 0.0
+                
+                # Varyantın kendi fiyatı varsa onu, yoksa ana ürün fiyatını kullan
+                final_price = variant_purchase_price if variant_purchase_price > 0 else main_purchase_price
+                
+                variant_attributes = [val for val in v.get('Ozellikler', {}).values() if val]
+                variant_name_suffix = " - " + " / ".join(variant_attributes) if variant_attributes else ""
+                variant_name = f"{p.get('UrunAdi', '')}{variant_name_suffix}".strip()
+
+                processed_rows.append({
+                    'MODEL KODU': v.get('StokKodu'), 
+                    'ÜRÜN ADI': variant_name, 
+                    'ALIŞ FİYATI': final_price
+                })
+                
+    st.info(f"{varyantsiz_sayisi} adet tekil ve {varyant_sayisi} adet varyant olmak üzere toplam {len(processed_rows)} satır işlendi.")
     return pd.DataFrame(processed_rows)
+# <<< DÜZELTME SONU >>>
 
 def apply_rounding(price, method):
     """Fiyat yuvarlama mantığını uygular."""
@@ -82,8 +116,6 @@ if st.session_state.calculated_df is None and st.session_state.price_df is None:
             try:
                 sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
                 
-                # <<< DÜZELTME BAŞLANGICI >>>
-                # İlerleme çubuğu ve anlık durum metni için bir yer tutucu oluşturuyoruz.
                 progress_bar = st.progress(0, text="Sentos API'ye bağlanılıyor...")
                 
                 def progress_callback(update):
@@ -92,18 +124,15 @@ if st.session_state.calculated_df is None and st.session_state.price_df is None:
                     message = update.get('message', 'Veriler işleniyor...')
                     progress_bar.progress(progress / 100.0, text=message)
 
-                # Artık 'with st.spinner' yerine, ilerleme çubuğunu güncelleyen callback'i kullanıyoruz.
                 all_products = sentos_api.get_all_products(progress_callback=progress_callback)
-                progress_bar.progress(100, text="Veriler işleniyor...")
+                progress_bar.progress(100, text="Veriler DataFrame'e dönüştürülüyor...")
                 st.session_state.price_df = process_sentos_product_list(all_products)
-                progress_bar.empty() # İşlem bitince ilerleme çubuğunu kaldır.
-                # <<< DÜZELTME SONU >>>
+                progress_bar.empty()
 
                 st.toast(f"{len(st.session_state.price_df)} ürün için alış fiyatları çekildi."); st.rerun()
 
             except Exception as e: 
                 st.error(f"API hatası: {e}")
-                # Hata durumunda ilerleme çubuğunu kaldır
                 if 'progress_bar' in locals():
                     progress_bar.empty()
     with col2:
@@ -113,7 +142,6 @@ if st.session_state.calculated_df is None and st.session_state.price_df is None:
             if loaded_df is not None:
                 st.session_state.calculated_df = loaded_df
                 st.toast("Kayıtlı fiyat listesi başarıyla yüklendi!"); st.rerun()
-# ... (Kodun geri kalanı aynı)
 else:
     source = "hesaplanan (Google Sheets)" if st.session_state.calculated_df is not None else "ham (Sentos)"
     count = len(st.session_state.calculated_df if st.session_state.calculated_df is not None else st.session_state.price_df)
@@ -130,14 +158,18 @@ if st.session_state.price_df is not None or st.session_state.calculated_df is no
         markup_value = c1.number_input("Değer", min_value=0.0, value=100.0 if markup_type == "Yüzde Ekle (%)" else 2.5, step=0.1, key="markup_value")
         add_vat = c2.checkbox("Satışa KDV Dahil Et", value=True, key="add_vat")
         vat_rate = c2.number_input("KDV Oranı (%)", 0, 100, 10, disabled=not add_vat, key="vat_rate")
-        rounding_method = c3.radio("Fiyat Yuvarlama", ["Yok", "Yukarı (X9.99)", "Aşağı (X9.99)"], index=1, key="rounding")
+        rounding_method_text = c3.radio("Fiyat Yuvarlama", ["Yok", "Yukarı (X9.99)", "Aşağı (X9.99)"], index=1, key="rounding")
         
         if c4.button("💰 Fiyatları Hesapla", type="primary", use_container_width=True):
             df = st.session_state.price_df.copy() if st.session_state.price_df is not None else st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']].copy()
             st.session_state.vat_rate = vat_rate
             df['SATIS_FIYATI_KDVSIZ'] = df['ALIŞ FİYATI'] * (1 + markup_value / 100) if markup_type == "Yüzde Ekle (%)" else df['ALIŞ FİYATI'] * markup_value
             df['SATIS_FIYATI_KDVLI'] = df['SATIS_FIYATI_KDVSIZ'] * (1 + vat_rate / 100) if add_vat else df['SATIS_FIYATI_KDVSIZ']
-            df['NIHAI_SATIS_FIYATI'] = df['SATIS_FIYATI_KDVLI'].apply(lambda p: apply_rounding(p, rounding_method))
+            
+            # Yuvarlama metni argümana dönüştürülüyor
+            rounding_method_arg = rounding_method_text.replace(" (X9.99)", "").replace("Aşağı", "Aşağı Yuvarla").replace("Yukarı", "Yukarı Yuvarla")
+            df['NIHAI_SATIS_FIYATI'] = df['SATIS_FIYATI_KDVLI'].apply(lambda p: apply_rounding(p, rounding_method_arg))
+
             revenue = df['NIHAI_SATIS_FIYATI'] / (1 + vat_rate / 100) if add_vat else df['NIHAI_SATIS_FIYATI']
             df['KÂR'] = revenue - df['ALIŞ FİYATI']
             df['KÂR ORANI (%)'] = np.divide(df['KÂR'], df['ALIŞ FİYATI'], out=np.zeros_like(df['KÂR']), where=df['ALIŞ FİYATI']!=0) * 100
