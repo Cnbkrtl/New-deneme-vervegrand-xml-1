@@ -167,7 +167,6 @@ if st.session_state.price_df is not None or st.session_state.calculated_df is no
             rounding_method_arg = rounding_method_text.replace(" (X9.99)", "").replace("Aşağı", "Aşağı Yuvarla").replace("Yukarı", "Yukarı Yuvarla")
             df['NIHAI_SATIS_FIYATI'] = df['SATIS_FIYATI_KDVLI'].apply(lambda p: apply_rounding(p, rounding_method_arg))
 
-            # KDV oranını, widget'tan gelen 'vat_rate' değişkeninden alıyoruz.
             revenue = df['NIHAI_SATIS_FIYATI'] / (1 + vat_rate / 100) if add_vat else df['NIHAI_SATIS_FIYATI']
             df['KÂR'] = revenue - df['ALIŞ FİYATI']
             df['KÂR ORANI (%)'] = np.divide(df['KÂR'], df['ALIŞ FİYATI'], out=np.zeros_like(df['KÂR']), where=df['ALIŞ FİYATI']!=0) * 100
@@ -189,7 +188,6 @@ if st.session_state.calculated_df is not None:
     with st.expander("Tablo 2: Perakende İndirim Analizi"):
         retail_discount = st.slider("İndirim Oranı (%)", 0, 50, st.session_state.get('retail_discount', 10), 5, key="retail_discount")
         retail_df = df.copy()
-        # KDV oranını artık session_state'den güvenle okuyabiliriz.
         current_vat_rate = st.session_state.get('vat_rate', 10) 
         retail_df['İNDİRİM ORANI (%)'] = retail_discount
         retail_df['İNDİRİMLİ SATIŞ FİYATI'] = retail_df['NIHAI_SATIS_FIYATI'] * (1 - retail_discount / 100)
