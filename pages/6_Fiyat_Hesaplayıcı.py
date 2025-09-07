@@ -1,10 +1,9 @@
-# pages/6_Fiyat_Hesaplayıcı.py (Teşhis Bölümü Eklenmiş TAM Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py (İlerleme Göstergesi Düzeltilmiş Nihai Sürüm)
 
 import streamlit as st
 import pandas as pd
 import math
 import numpy as np
-from io import StringIO
 
 # Proje dizinindeki modülleri import et
 import sys
@@ -12,46 +11,48 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shopify_sync import ShopifyAPI, SentosAPI
-import gsheets_manager # Önceki isteğiniz üzerine data_manager yerine gsheets_manager kullanılıyor
+import gsheets_manager
 
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():
+    """Mevcut style.css dosyasını yükler."""
     try:
-        with open("style.css") as f: st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-    except FileNotFoundError: pass
+        with open("style.css") as f:
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+    except FileNotFoundError:
+        pass
 
 if not st.session_state.get("authentication_status"):
-    st.error("Lütfen bu sayfaya erişmek için giriş yapın."); st.stop()
+    st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
+    st.stop()
+
 load_css()
 
 # --- Yardımcı Fonksiyonlar ---
 @st.cache_data
-def process_sentos_product_list(product_list):
+def process_sentos_product_list(_product_list):
+    """Sentos'tan gelen ürün listesini işleyerek temiz bir DataFrame oluşturur."""
     processed_rows = []
-    varyant_sayisi = 0
-    varyantsiz_sayisi = 0
-    if not product_list: return pd.DataFrame() # Gelen liste boşsa, boş DataFrame döndür
-    for p in product_list:
-        try: main_purchase_price = float(str(p.get('AlisFiyati', '0')).replace(',', '.'))
-        except (ValueError, TypeError): main_purchase_price = 0.0
+    for p in _product_list:
+        try: main_price = float(str(p.get('AlisFiyati', '0')).replace(',', '.'))
+        except (ValueError, TypeError): main_price = 0.0
+        
         variants = p.get('Varyasyonlar', [])
         if not variants:
-            varyantsiz_sayisi += 1
-            processed_rows.append({'MODEL KODU': p.get('StokKodu'), 'ÜRÜN ADI': p.get('UrunAdi'), 'ALIŞ FİYATI': main_purchase_price})
+            processed_rows.append({'MODEL KODU': p.get('StokKodu'), 'ÜRÜN ADI': p.get('UrunAdi'), 'ALIŞ FİYATI': main_price})
         else:
             for v in variants:
-                varyant_sayisi += 1
-                try: variant_purchase_price = float(str(v.get('AlisFiyati', '0')).replace(',', '.'))
-                except (ValueError, TypeError): variant_purchase_price = 0.0
-                final_price = variant_purchase_price if variant_purchase_price > 0 else main_purchase_price
-                variant_attributes = [val for val in v.get('Ozellikler', {}).values() if val]
-                variant_name_suffix = " - " + " / ".join(variant_attributes) if variant_attributes else ""
-                variant_name = f"{p.get('UrunAdi', '')}{variant_name_suffix}".strip()
-                processed_rows.append({'MODEL KODU': v.get('StokKodu'), 'ÜRÜN ADI': variant_name, 'ALIŞ FİYATI': final_price})
-    st.info(f"{varyantsiz_sayisi} adet tekil ve {varyant_sayisi} adet varyant olmak üzere toplam {len(processed_rows)} satır işlendi.")
+                try: var_price = float(str(v.get('AlisFiyati', '0')).replace(',', '.'))
+                except (ValueError, TypeError): var_price = 0.0
+                final_price = var_price if var_price > 0 else main_price
+                attrs = [val for val in v.get('Ozellikler', {}).values() if val]
+                suffix = " - " + " / ".join(attrs) if attrs else ""
+                name = f"{p.get('UrunAdi', '')}{suffix}".strip()
+                processed_rows.append({'MODEL KODU': v.get('StokKodu'), 'ÜRÜN ADI': name, 'ALIŞ FİYATI': final_price})
     return pd.DataFrame(processed_rows)
 
 def apply_rounding(price, method):
+    """Fiyat yuvarlama mantığını uygular."""
     if method == "Yukarı Yuvarla":
         if price % 10 != 9.99 and price % 10 != 9: return math.floor(price / 10) * 10 + 9.99
         elif price % 1 == 0: return price - 0.01
@@ -80,24 +81,31 @@ if st.session_state.calculated_df is None and st.session_state.price_df is None:
         if st.button("🔄 Sentos'tan Yeni Fiyat Listesi Çek", use_container_width=True):
             try:
                 sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
-                with st.spinner("Tüm ürünler Sentos API'den çekiliyor..."):
-                    all_products = sentos_api.get_all_products()
-
-                # <<< GEÇİCİ TEŞHİS BÖLÜMÜ >>>
-                st.info("--- TEŞHİS BİLGİSİ: API'den Gelen İlk Ürünün Ham Verisi ---")
-                if all_products:
-                    st.json(all_products[0]) # API'den gelen ilk ürünün içeriğini ekrana bas
-                else:
-                    st.error("API'den hiç ürün verisi gelmedi! Lütfen Sentos bağlantınızı kontrol edin.")
-                st.warning("Teşhis modu aktif. Lütfen yukarıdaki mavi kutucukta görünen verinin ekran görüntüsünü alıp benimle paylaşın. Bu adımdan sonra kodun tam ve çalışan halini vereceğim.")
-                st.stop() # Programı burada durdurarak sadece ham veriyi görmemizi sağla
-                # <<< TEŞHİS BÖLÜMÜ SONU >>>
                 
+                # <<< DÜZELTME BAŞLANGICI >>>
+                # İlerleme çubuğu ve anlık durum metni için bir yer tutucu oluşturuyoruz.
+                progress_bar = st.progress(0, text="Sentos API'ye bağlanılıyor...")
+                
+                def progress_callback(update):
+                    """API'den gelen ilerleme verisini arayüzde gösterir."""
+                    progress = update.get('progress', 0)
+                    message = update.get('message', 'Veriler işleniyor...')
+                    progress_bar.progress(progress / 100.0, text=message)
+
+                # Artık 'with st.spinner' yerine, ilerleme çubuğunu güncelleyen callback'i kullanıyoruz.
+                all_products = sentos_api.get_all_products(progress_callback=progress_callback)
+                progress_bar.progress(100, text="Veriler işleniyor...")
                 st.session_state.price_df = process_sentos_product_list(all_products)
+                progress_bar.empty() # İşlem bitince ilerleme çubuğunu kaldır.
+                # <<< DÜZELTME SONU >>>
+
                 st.toast(f"{len(st.session_state.price_df)} ürün için alış fiyatları çekildi."); st.rerun()
+
             except Exception as e: 
                 st.error(f"API hatası: {e}")
-                st.exception(e)
+                # Hata durumunda ilerleme çubuğunu kaldır
+                if 'progress_bar' in locals():
+                    progress_bar.empty()
     with col2:
         if st.button("📂 Kayıtlı Fiyat Listesini Yükle (Google Sheets)", use_container_width=True):
             with st.spinner("Google E-Tablolardan veriler yükleniyor..."):
@@ -105,6 +113,7 @@ if st.session_state.calculated_df is None and st.session_state.price_df is None:
             if loaded_df is not None:
                 st.session_state.calculated_df = loaded_df
                 st.toast("Kayıtlı fiyat listesi başarıyla yüklendi!"); st.rerun()
+# ... (Kodun geri kalanı aynı)
 else:
     source = "hesaplanan (Google Sheets)" if st.session_state.calculated_df is not None else "ham (Sentos)"
     count = len(st.session_state.calculated_df if st.session_state.calculated_df is not None else st.session_state.price_df)
@@ -112,10 +121,9 @@ else:
     if st.button("🧹 Verileri Temizle ve Baştan Başla", use_container_width=True):
         st.session_state.price_df = None; st.session_state.calculated_df = None; st.rerun()
 
-# Adım 2: Fiyatlandırma Kuralları
-base_df_source = st.session_state.price_df if st.session_state.price_df is not None else st.session_state.calculated_df
-if base_df_source is not None:
+if st.session_state.price_df is not None or st.session_state.calculated_df is not None:
     st.markdown("---"); st.subheader("Adım 2: Fiyatlandırma Kurallarını Uygula")
+    base_df_source = st.session_state.price_df if st.session_state.price_df is not None else st.session_state.calculated_df
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
         markup_type = c1.radio("Kâr Marjı Tipi", ["Yüzde Ekle (%)", "Çarpan Kullan (x)"], key="markup_type")
@@ -137,7 +145,6 @@ if base_df_source is not None:
             st.session_state.price_df = None
             st.rerun()
 
-# Adım 3 ve 4: Analiz, Kaydetme ve Gönderme
 if st.session_state.calculated_df is not None:
     st.markdown("---"); st.subheader("Adım 3: Senaryoları Analiz Et")
     df = st.session_state.calculated_df
@@ -157,7 +164,7 @@ if st.session_state.calculated_df is not None:
         retail_df['İNDİRİMLİ SATIŞ FİYATI'] = retail_df['NIHAI_SATIS_FIYATI'] * (1 - retail_discount / 100)
         revenue_after_discount = retail_df['İNDİRİMLİ SATIŞ FİYATI'] / (1 + current_vat_rate / 100)
         retail_df['İNDİRİM SONRASI KÂR'] = revenue_after_discount - retail_df['ALIŞ FİYATI']
-        retail_df['İNDİRİM SONRASI KÂR ORANI (%)'] = np.divide(retail_df['İNDİRİM SONRASI KÂR'], retail_df['ALIŞ FİYATI'], out=np.zeros_like(retail_df['İNDİRİM SONRASI KÂR']), where=df['ALIŞ FİYATI']!=0) * 100
+        retail_df['İNDİRİM SONRASI KÂR ORANI (%)'] = np.divide(retail_df['İNDİRİM SONRASI KÂR'], retail_df['ALIŞ FİYATI'], out=np.zeros_like(retail_df['İNDİRİM SONRASI KÂR']), where=retail_df['ALIŞ FİYATI']!=0) * 100
         discount_df_display = retail_df[['MODEL KODU', 'ÜRÜN ADI', 'NIHAI_SATIS_FIYATI', 'İNDİRİM ORANI (%)', 'İNDİRİMLİ SATIŞ FİYATI', 'İNDİRİM SONRASI KÂR', 'İNDİRİM SONRASI KÂR ORANI (%)']]
         st.dataframe(discount_df_display.style.format({
             'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', 'İNDİRİM ORANI (%)': '{:.0f}%', 'İNDİRİMLİ SATIŞ FİYATI': '{:,.2f} ₺',
@@ -175,6 +182,7 @@ if st.session_state.calculated_df is not None:
             ws_discount = st.slider("Perakende Fiyatından İndirim (%)", 10, 70, 40, 5, key="ws_discount")
             sales_vat_divisor = 1 + (current_vat_rate / 100)
             wholesale_df["TOPTAN FİYAT (KDV'siz)"] = (wholesale_df["NIHAI_SATIS_FIYATI"] / sales_vat_divisor) * (1 - ws_discount / 100)
+        
         wholesale_df["TOPTAN FİYAT (KDV'li)"] = wholesale_df["TOPTAN FİYAT (KDV'siz)"] * (1 + current_vat_rate / 100)
         wholesale_df['TOPTAN KÂR'] = wholesale_df["TOPTAN FİYAT (KDV'siz)"] - wholesale_df["ALIŞ FİYATI"]
         wholesale_df['PERAKENDEDEN İSKONTO (%)'] = (1 - (wholesale_df["TOPTAN FİYAT (KDV'li)"] / wholesale_df['NIHAI_SATIS_FIYATI'])) * 100
@@ -196,6 +204,7 @@ if st.session_state.calculated_df is not None:
         update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
         if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary"):
             shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
+            
             if update_choice == "Ana Fiyatlar":
                 df_to_send = main_df_display; price_col = 'NIHAI_SATIS_FIYATI'; compare_at_price_col = None
             else:
