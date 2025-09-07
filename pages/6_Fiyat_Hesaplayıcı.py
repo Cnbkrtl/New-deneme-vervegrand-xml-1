@@ -230,7 +230,7 @@ if st.session_state.calculated_df is not None:
 
             st.info(f"{len(df_to_send)} ürünün fiyatı Shopify'a güncellenmek üzere hazırlanıyor...")
             with st.spinner("Varyant ID'leri alınıyor ve güncellemeler hazırlanıyor..."):
-                skus_to_update = df_to_send['MODEL KODU'].dropna().tolist()
+                skus_to_update = df_to_send['MODEL KODU'].dropna().astype(str).tolist()
                 variant_map = shopify_api.get_variant_ids_by_skus(skus_to_update)
                 
                 updates = []
