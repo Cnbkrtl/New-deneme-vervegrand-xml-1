@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (Esnek Alış Fiyatı Okuma Eklendi)
+# pages/6_Fiyat_Hesaplayıcı.py (Nihai Sürüm - Sadece Ana Ürünleri Doğru Anahtarlarla Listeler)
 
 import streamlit as st
 import pandas as pd
@@ -32,33 +32,34 @@ load_css()
 
 # --- YARDIMCI FONKSİYONLAR ---
 
-# <<< DÜZELTME BAŞLANGICI: Fonksiyon artık birden fazla olası alış fiyatı anahtarını kontrol ediyor >>>
+# <<< NİHAİ DÜZELTME: Fonksiyon artık sadece ana ürünleri ve doğru anahtarları kullanıyor >>>
 def process_sentos_product_list(product_list):
     """
     Sentos'tan gelen ürün listesini işleyerek, her ana ürün için tek bir satır oluşturur.
-    Alış fiyatı için 'purchase_price', 'AlisFiyati' ve 'cost' anahtarlarını sırayla kontrol eder.
+    Ürünlerin içindeki 'variants' dizisi tamamen göz ardı edilir ve 'purchase_price' anahtarı kullanılır.
     """
     processed_rows = []
     
+    # Gelen liste ana ürünleri içerir. Her bir ana ürün için tek bir satır oluşturalım.
     for p in product_list:
         try:
-            # Olası alış fiyatı anahtarlarını sırayla dene
-            price_str = p.get('purchase_price') or p.get('AlisFiyati') or p.get('cost') or '0'
-            purchase_price_str = str(price_str).replace(',', '.')
+            # Doğru anahtar 'purchase_price' olarak eski koddan teyit edildi.
+            purchase_price_str = str(p.get('purchase_price', '0')).replace(',', '.')
             purchase_price = float(purchase_price_str)
         except (ValueError, TypeError):
             purchase_price = 0.0
 
-        # Ana ürün bilgilerini içeren bir sözlük oluştur ve listeye ekle
+        # Sadece ana ürünün bilgilerini al ve listeye ekle.
+        # Varyantlar (p.get('variants')) bu kısımda tamamen yok sayılır.
         processed_rows.append({
-            'MODEL KODU': p.get('sku'),       # Ana ürünün SKU'su
-            'ÜRÜN ADI': p.get('name'),         # Ana ürünün Adı
-            'ALIŞ FİYATI': purchase_price     # Bulunan ilk geçerli Alış Fiyatı
+            'MODEL KODU': p.get('sku'),
+            'ÜRÜN ADI': p.get('name'),
+            'ALIŞ FİYATI': purchase_price
         })
                 
     st.info(f"Toplam {len(processed_rows)} ana ürün işlendi.")
     return pd.DataFrame(processed_rows)
-# <<< DÜZELTME SONU >>>
+# <<< NİHAİ DÜZELTME SONU >>>
 
 
 def apply_rounding(price, method):
@@ -218,9 +219,6 @@ if st.session_state.calculated_df is not None:
         if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary"):
             shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
             
-            # Shopify'a gönderilecek SKU'lar ana ürün SKU'ları olmalı.
-            # Ancak fiyat güncellemesi varyant bazlı yapılır. Bu kısım ileride detaylandırılabilir.
-            # Şimdilik, eğer ana ürün SKU'su varyant SKU'su ile aynıysa çalışacaktır.
             if update_choice == "Ana Fiyatlar":
                 df_to_send = main_df_display
                 price_col = 'NIHAI_SATIS_FIYATI'
