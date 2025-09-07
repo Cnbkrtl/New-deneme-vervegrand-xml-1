@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (Tüm özellikler aktif, Google Sheets butonu eklendi)
+# pages/6_Fiyat_Hesaplayıcı.py (Tüm Özellikler Birleştirilmiş Nihai Sürüm)
 
 import streamlit as st
 import pandas as pd
@@ -13,7 +13,8 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 from shopify_sync import ShopifyAPI, SentosAPI
-import gsheets_manager
+import gsheets_manager 
+import data_manager # <<< ÖZELLİK EKLENDİ: Yerel kayıt için eklendi
 
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():
@@ -33,23 +34,16 @@ load_css()
 
 # --- YARDIMCI FONKSİYONLAR ---
 def get_base_code_from_sku(sku):
-    """Varyant SKU'sundan ana ürün kodunu tahmin eder."""
     if not sku or not isinstance(sku, str):
         return None
     return sku.split('-', 1)[0]
 
 def get_base_name(product_name):
-    """Ürün adından varyant bilgilerini ('- Renk / Beden') temizler."""
     if not product_name or not isinstance(product_name, str):
         return "İsimsiz Ürün"
     return product_name.split(' - ')[0].strip()
 
 def process_sentos_data(product_list):
-    """
-    Sentos'tan gelen veriyi işleyerek iki ayrı DataFrame oluşturur:
-    1. df_variants: Tüm varyantları içeren detaylı liste.
-    2. df_main_products: Arayüzde gösterilecek, sadeleştirilmiş ana ürün listesi.
-    """
     all_variants_rows = []
     
     for p in product_list:
@@ -61,31 +55,24 @@ def process_sentos_data(product_list):
         if not variants:
             base_sku = p.get('sku')
             all_variants_rows.append({
-                'base_sku': base_sku,
-                'MODEL KODU': base_sku,
-                'ÜRÜN ADI': p.get('name'),
-                'ALIŞ FİYATI': main_purchase_price
+                'base_sku': base_sku, 'MODEL KODU': base_sku,
+                'ÜRÜN ADI': p.get('name'), 'ALIŞ FİYATI': main_purchase_price
             })
         else:
             for v in variants:
                 variant_price_str = str(v.get('purchase_price') or v.get('AlisFiyati') or '0').replace(',', '.')
                 variant_purchase_price = float(variant_price_str) if variant_price_str else 0.0
                 final_price = variant_purchase_price if variant_purchase_price > 0 else main_purchase_price
-                
                 base_sku = get_base_code_from_sku(v.get('sku')) or p.get('sku')
-                
                 color = v.get('color', '').strip()
                 model_data = v.get('model', '')
                 size = (model_data.get('value', '') if isinstance(model_data, dict) else str(model_data)).strip()
                 attributes = [attr for attr in [color, size] if attr]
                 suffix = " - " + " / ".join(attributes) if attributes else ""
                 variant_name = f"{p.get('name', '')}{suffix}".strip()
-
                 all_variants_rows.append({
-                    'base_sku': base_sku,
-                    'MODEL KODU': v.get('sku'),
-                    'ÜRÜN ADI': variant_name,
-                    'ALIŞ FİYATI': final_price
+                    'base_sku': base_sku, 'MODEL KODU': v.get('sku'),
+                    'ÜRÜN ADI': variant_name, 'ALIŞ FİYATI': final_price
                 })
     
     if not all_variants_rows:
@@ -124,7 +111,7 @@ st.markdown("""
 # Adım 1: Veri Yükleme
 st.subheader("Adım 1: Ürün Verilerini Yükle")
 if st.session_state.df_for_display is None:
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     with col1:
         if st.button("🔄 Sentos'tan Yeni Fiyat Listesi Çek", use_container_width=True):
             with st.spinner("Sentos API'den veriler çekiliyor ve işleniyor..."):
@@ -134,12 +121,41 @@ if st.session_state.df_for_display is None:
                     if not all_products:
                         st.error("❌ Sentos API'den hiç ürün verisi gelmedi.")
                     else:
-                        st.session_state.df_variants, st.session_state.df_for_display = process_sentos_data(all_products)
-                        st.toast(f"{len(st.session_state.df_for_display)} ana ürün ve {len(st.session_state.df_variants)} varyant bulundu.")
+                        df_variants, df_main = process_sentos_data(all_products)
+                        st.session_state.df_variants = df_variants
+                        st.session_state.df_for_display = df_main
+                        
+                        # <<< ÖZELLİK EKLENDİ: Veriyi yerel olarak kaydet
+                        username = st.session_state["username"]
+                        data_manager.save_user_data(username, 
+                                                    df_variants_json=df_variants.to_json(orient='split'),
+                                                    df_for_display_json=df_main.to_json(orient='split'))
+                        st.toast("Veriler çekildi ve yerel olarak kaydedildi.")
                         st.rerun()
                 except Exception as e: 
                     st.error(f"API hatası: {e}")
-    # ... (Google Sheets yükleme butonu aynı kalabilir) ...
+
+    # <<< ÖZELLİK EKLENDİ: Yerel ve Google Sheets'ten yükleme butonları
+    with col2:
+        if st.button("📂 Kayıtlı Veriyi Yerelden Yükle", use_container_width=True):
+            with st.spinner("Yerel veriler yükleniyor..."):
+                username = st.session_state["username"]
+                user_data = data_manager.load_user_data(username)
+                if user_data:
+                    st.session_state.df_variants = pd.read_json(StringIO(user_data['df_variants_json']), orient='split')
+                    st.session_state.df_for_display = pd.read_json(StringIO(user_data['df_for_display_json']), orient='split')
+                    if user_data.get('calculated_df_json'):
+                        st.session_state.calculated_df = pd.read_json(StringIO(user_data['calculated_df_json']), orient='split')
+                    st.toast("Kayıtlı veriler yerelden yüklendi.")
+                    st.rerun()
+                else:
+                    st.warning("Daha önce kaydedilmiş yerel veri bulunamadı.")
+    
+    with col3:
+        if st.button("📄 Kayıtlı Veriyi G-Sheets'ten Yükle", use_container_width=True):
+            st.warning("Google Sheets'ten yükleme özelliği şu an pasiftir.")
+            # Google Sheets'ten yükleme mantığı buraya eklenebilir.
+
 else:
     count = len(st.session_state.df_for_display)
     st.success(f"✅ {count} ana ürün verisi hafızada yüklü.")
@@ -147,6 +163,7 @@ else:
         st.session_state.calculated_df = None
         st.session_state.df_for_display = None
         st.session_state.df_variants = None
+        data_manager.delete_user_data(st.session_state["username"]) # Yerel veriyi de sil
         st.rerun()
 
 if st.session_state.df_for_display is not None:
@@ -169,12 +186,21 @@ if st.session_state.df_for_display is not None:
             df['KÂR'] = revenue - df['ALIŞ FİYATI']
             df['KÂR ORANI (%)'] = np.divide(df['KÂR'], df['ALIŞ FİYATI'], out=np.zeros_like(df['KÂR']), where=df['ALIŞ FİYATI']!=0) * 100
             st.session_state.calculated_df = df
+            
+            # <<< ÖZELLİK EKLENDİ: Hesaplanan veriyi yerel olarak kaydet
+            username = st.session_state["username"]
+            data_manager.save_user_data(username, 
+                                        df_variants_json=st.session_state.df_variants.to_json(orient='split'),
+                                        df_for_display_json=st.session_state.df_for_display.to_json(orient='split'),
+                                        calculated_df_json=df.to_json(orient='split'))
+            st.toast("Fiyatlar hesaplandı ve yerel olarak kaydedildi.")
             st.rerun()
 
 if st.session_state.calculated_df is not None:
     st.markdown("---"); st.subheader("Adım 3: Senaryoları Analiz Et")
     df = st.session_state.calculated_df
     
+    # <<< ÖZELLİK EKLENDİ: Tüm analiz tabloları geri getirildi >>>
     with st.expander("Tablo 1: Ana Fiyat ve Kârlılık Listesi (Referans)", expanded=True):
         main_df_display = df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', 'SATIS_FIYATI_KDVSIZ', 'NIHAI_SATIS_FIYATI', 'KÂR', 'KÂR ORANI (%)']]
         st.dataframe(main_df_display.style.format({
@@ -182,38 +208,75 @@ if st.session_state.calculated_df is not None:
             'KÂR': '{:,.2f} ₺', 'KÂR ORANI (%)': '{:.2f}%'
         }), use_container_width=True)
     
-    # Not: İndirim ve Toptan satış analiz tabloları da aynı şekilde 'df' üzerinden oluşturulabilir.
-    # Önceki kodunuzda olduğu gibi bu kısımları buraya ekleyebilirsiniz.
+    with st.expander("Tablo 2: Perakende İndirim Analizi", expanded=True):
+        retail_discount = st.slider("İndirim Oranı (%)", 0, 50, 10, 5, key="retail_slider")
+        retail_df = df.copy()
+        retail_df['İNDİRİM ORANI (%)'] = retail_discount
+        retail_df['İNDİRİMLİ SATIŞ FİYATI'] = retail_df['NIHAI_SATIS_FIYATI'] * (1 - retail_discount / 100)
+        revenue_after_discount = retail_df['İNDİRİMLİ SATIŞ FİYATI'] / (1 + vat_rate / 100)
+        retail_df['İNDİRİM SONRASI KÂR'] = revenue_after_discount - retail_df['ALIŞ FİYATI']
+        retail_df['İNDİRİM SONRASI KÂR ORANI (%)'] = np.divide(retail_df['İNDİRİM SONRASI KÂR'], retail_df['ALIŞ FİYATI'], out=np.zeros_like(retail_df['İNDİRİM SONRASI KÂR']), where=retail_df['ALIŞ FİYATI']!=0) * 100
+        discount_df_display = retail_df[['MODEL KODU', 'ÜRÜN ADI', 'NIHAI_SATIS_FIYATI', 'İNDİRİM ORANI (%)', 'İNDİRİMLİ SATIŞ FİYATI', 'İNDİRİM SONRASI KÂR', 'İNDİRİM SONRASI KÂR ORANI (%)']]
+        st.dataframe(discount_df_display.style.format({
+            'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', 'İNDİRİM ORANI (%)': '{:.0f}%', 'İNDİRİMLİ SATIŞ FİYATI': '{:,.2f} ₺',
+            'İNDİRİM SONRASI KÂR': '{:,.2f} ₺', 'İNDİRİM SONRASI KÂR ORANI (%)': '{:.2f}%'
+        }), use_container_width=True)
+
+    with st.expander("Tablo 3: Toptan Satış Fiyat Analizi", expanded=True):
+        wholesale_method = st.radio("Toptan Fiyat Yöntemi", ('Çarpanla', 'İndirimle'), horizontal=True, key="ws_method")
+        wholesale_df = df.copy()
+        if wholesale_method == 'Çarpanla':
+            ws_multiplier = st.number_input("Toptan Çarpanı", 1.0, 5.0, 1.8, 0.1)
+            wholesale_df["TOPTAN FİYAT (KDV'siz)"] = wholesale_df["ALIŞ FİYATI"] * ws_multiplier
+        else:
+            ws_discount = st.slider("Perakende Fiyatından İndirim (%)", 10, 70, 40, 5, key="ws_discount")
+            wholesale_df["TOPTAN FİYAT (KDV'siz)"] = (wholesale_df["NIHAI_SATIS_FIYATI"] / (1 + vat_rate / 100)) * (1 - ws_discount / 100)
+        wholesale_df["TOPTAN FİYAT (KDV'li)"] = wholesale_df["TOPTAN FİYAT (KDV'siz)"] * (1 + vat_rate / 100)
+        wholesale_df['TOPTAN KÂR'] = wholesale_df["TOPTAN FİYAT (KDV'siz)"] - wholesale_df["ALIŞ FİYATI"]
+        wholesale_df_display = wholesale_df[['MODEL KODU', 'ÜRÜN ADI', 'NIHAI_SATIS_FIYATI', "TOPTAN FİYAT (KDV'siz)", "TOPTAN FİYAT (KDV'li)", 'TOPTAN KÂR']]
+        st.dataframe(wholesale_df_display.style.format({
+            'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', "TOPTAN FİYAT (KDV'siz)": '{:,.2f} ₺', "TOPTAN FİYAT (KDV'li)": '{:,.2f} ₺', 'TOPTAN KÂR': '{:,.2f} ₺'
+        }), use_container_width=True)
 
     st.markdown("---"); st.subheader("Adım 4: Kaydet ve Shopify'a Gönder")
-
-    # <<< DÜZELTME: Kaldırılan Google Sheets Butonu ve Sütun Yapısı Geri Eklendi >>>
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True):
-            st.warning("Google Sheets'e kaydetme özelliği için analiz tablolarının (indirim, toptan) bu kodda yeniden oluşturulması gerekmektedir.")
-            # Örnek: gsheets_manager.save_pricing_data_to_gsheets(main_df_display)
+            st.warning("Google Sheets kaydetme özelliği bu versiyonda pasiftir.")
+            # ...
     
     with col2:
-        update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar"]) # Şimdilik sadece ana fiyatlar
+        update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
         if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary"):
             with st.spinner("Varyant fiyatları hazırlanıyor ve Shopify ile eşleştiriliyor..."):
-                calculated_prices = st.session_state.calculated_df[['MODEL KODU', 'NIHAI_SATIS_FIYATI']].rename(columns={'MODEL KODU': 'base_sku'})
-                df_to_send = pd.merge(st.session_state.df_variants, calculated_prices, on='base_sku', how='left')
-                skus_to_update = df_to_send['MODEL KODU'].dropna().astype(str).tolist()
                 shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
+                
+                # <<< ÖZELLİK EKLENDİ: İndirimli Fiyat Gönderme Mantığı >>>
+                if update_choice == "Ana Fiyatlar":
+                    # Ana ürünlerin NIHAI_SATIS_FIYATI'nı al
+                    prices_to_apply = df[['MODEL KODU', 'NIHAI_SATIS_FIYATI']].rename(columns={'MODEL KODU': 'base_sku'})
+                    # Arka plandaki tüm varyantlarla birleştir
+                    df_to_send = pd.merge(st.session_state.df_variants, prices_to_apply, on='base_sku', how='left')
+                    price_col, compare_at_price_col = 'NIHAI_SATIS_FIYATI', None
+                else: # İndirimli Fiyatlar
+                    # İndirimli fiyatları içeren `retail_df`'i al
+                    prices_to_apply = retail_df[['MODEL KODU', 'NIHAI_SATIS_FIYATI', 'İNDİRİMLİ SATIŞ FİYATI']].rename(columns={'MODEL KODU': 'base_sku'})
+                    df_to_send = pd.merge(st.session_state.df_variants, prices_to_apply, on='base_sku', how='left')
+                    price_col, compare_at_price_col = 'İNDİRİMLİ SATIŞ FİYATI', 'NIHAI_SATIS_FIYATI'
+
+                skus_to_update = df_to_send['MODEL KODU'].dropna().astype(str).tolist()
                 variant_map = shopify_api.get_variant_ids_by_skus(skus_to_update)
                 
                 updates = []
                 for _, row in df_to_send.iterrows():
                     sku = str(row['MODEL KODU'])
                     if sku in variant_map:
-                        update_payload = {
-                            "variant_id": variant_map[sku],
-                            "price": f"{row['NIHAI_SATIS_FIYATI']:.2f}",
-                            "compare_at_price": None
-                        }
-                        updates.append(update_payload)
+                        payload = {"variant_id": variant_map[sku], "price": f"{row[price_col]:.2f}"}
+                        if compare_at_price_col:
+                            payload["compare_at_price"] = f"{row[compare_at_price_col]:.2f}"
+                        else:
+                            payload["compare_at_price"] = None
+                        updates.append(payload)
 
             if updates:
                 st.info(f"{len(updates)} varyantın fiyatı Shopify'a güncelleniyor...")
