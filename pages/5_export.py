@@ -11,6 +11,14 @@ import re
 import os # YENİ: Ortak ön-ek (prefix) bulmak için eklendi
 import logging # YENİ: Hata ayıklama için eklendi
 
+# CSS'i yükle
+def load_css():
+    try:
+        with open("style.css") as f:
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+    except FileNotFoundError:
+        pass
+
 # --- Sayfa Yapılandırması ve Yardımcı Fonksiyonlar ---
 st.set_page_config(layout="wide", page_title="Liste Oluşturucu")
 

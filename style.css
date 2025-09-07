@@ -1,0 +1,105 @@
+/* style.css */
+
+/* Genel Font ve Renk Ayarları */
+body {
+    font-family: 'Inter', sans-serif;
+}
+
+/* Kenar Çubuğu (Sidebar) Stili */
+[data-testid="stSidebar"] {
+    background-color: #1a1a2e;
+    border-right: 2px solid #2a2a4e;
+}
+
+[data-testid="stSidebar"] .st-emotion-cache-17lntkn {
+    color: #e0e0ff;
+}
+
+[data-testid="stSidebar"] .st-emotion-cache-17lntkn:hover {
+    background-color: #2a2a4e;
+    color: #ffffff;
+}
+
+/* Ana Başlık Stili */
+.main-header {
+    background: linear-gradient(135deg, #1f1f3f 0%, #2a2a4e 100%);
+    padding: 2rem;
+    border-radius: 15px;
+    color: white;
+    text-align: center;
+    margin-bottom: 2rem;
+    border: 1px solid #4a4a7f;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+}
+
+.main-header h1 {
+    font-size: 2.5em;
+    font-weight: 700;
+}
+
+/* Kart (Card) Stilleri */
+.status-card {
+    background-color: #1a1a2e;
+    border: 1px solid #4a4a7f;
+    border-radius: 12px;
+    padding: 1.5rem;
+    margin: 1rem 0;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+    height: 100%;
+}
+
+.card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.card-header h3 {
+    margin: 0;
+    color: #e0e0ff;
+    font-size: 1.2em;
+}
+
+/* Durum Göstergeleri */
+.status-indicator {
+    padding: 0.3rem 0.8rem;
+    border-radius: 20px;
+    font-weight: 500;
+    font-size: 0.8em;
+}
+.status-connected { background: #1c4532; color: #a3e635; }
+.status-failed { background: #451c1c; color: #f87171; }
+.status-pending { background: #453a1c; color: #facc15; }
+
+/* Metrik (KPI) Stilleri */
+.st-emotion-cache-1b0udgb {
+    background-color: #2a2a4e;
+    border-left: 5px solid #6c5ce7;
+    padding: 1rem;
+    border-radius: 8px;
+}
+
+/* Buton Stilleri */
+.stButton>button {
+    border-radius: 8px;
+    border: 1px solid #6c5ce7;
+    background-color: transparent;
+    color: #e0e0ff;
+}
+.stButton>button:hover {
+    border-color: #a29bfe;
+    color: #ffffff;
+}
+.stButton>button:active {
+    background-color: #6c5ce7;
+}
+
+/* Form Submit Butonu (Primary) */
+.stButton>button[kind="primary"] {
+    background-color: #6c5ce7;
+    color: white;
+}
+.stButton>button[kind="primary"]:hover {
+    background-color: #a29bfe;
+}

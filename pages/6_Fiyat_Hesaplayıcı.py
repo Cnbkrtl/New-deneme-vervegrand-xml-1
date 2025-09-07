@@ -15,6 +15,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from shopify_sync import ShopifyAPI, SentosAPI
 import data_manager
 
+# CSS'i yükle
+def load_css():
+    try:
+        with open("style.css") as f:
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+    except FileNotFoundError:
+        pass
+
 st.set_page_config(layout="wide", page_title="Fiyat Analiz ve Yönetim Panosu")
 
 if not st.session_state.get("authentication_status"):

@@ -7,6 +7,14 @@ import time
 import pandas as pd
 from datetime import timedelta
 
+# CSS'i yükle
+def load_css():
+    try:
+        with open("style.css") as f:
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+    except FileNotFoundError:
+        pass
+
 # Arka plandaki ana senkronizasyon fonksiyonlarını içe aktarıyoruz
 from shopify_sync import (
     sync_products_from_sentos_api, 

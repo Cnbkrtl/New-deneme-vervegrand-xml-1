@@ -1,4 +1,4 @@
-# streamlit_app.py (Standart ve Doğru Sürüm)
+# streamlit_app.py (Yazım Hatası Düzeltilmiş Sürüm)
 
 import streamlit as st
 import yaml
@@ -10,7 +10,7 @@ from io import StringIO
 # Gerekli modülleri import ediyoruz
 from config_manager import load_all_user_keys
 from data_manager import load_user_data
-from shopify_sync import ShopifyAPI, SentosAPI
+from shopify_sync import ShopifyAPI, SentosAPI # Bu import doğru
 
 st.set_page_config(page_title="Vervegrand Sync", page_icon="🔄", layout="wide", initial_sidebar_state="expanded")
 
@@ -55,7 +55,9 @@ def load_and_verify_user_data(username):
 
     if st.session_state.get('sentos_api_url') and st.session_state.get('sentos_api_key'):
         try:
-            api = SentOSAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
+            # <<< DÜZELTME BURADA >>>
+            # Hatalı olan "SentOSAPI" ifadesi "SentosAPI" olarak düzeltildi.
+            api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
             st.session_state.sentos_data = api.test_connection()
             st.session_state.sentos_status = 'connected' if st.session_state.sentos_data.get('success') else 'failed'
         except: st.session_state.sentos_status = 'failed'
