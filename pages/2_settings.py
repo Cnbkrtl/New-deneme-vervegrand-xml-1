@@ -1,7 +1,8 @@
+# pages/2_settings.py (Optimize Edilmiş Sürüm)
+
 import streamlit as st
-import config_manager
-from shopify_sync import ShopifyAPI, SentosAPI
 import json
+from shopify_sync import ShopifyAPI, SentosAPI
 
 # CSS'i yükle
 def load_css():
@@ -9,116 +10,96 @@ def load_css():
         with open("style.css") as f:
             st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
     except FileNotFoundError:
-        st.warning("style.css dosyası bulunamadı. Lütfen ana dizine ekleyin.")
+        # Bu dosya ana dizinde olmalı, diğer sayfalarda da uyarı olduğu için burada sessiz kalabilir.
+        pass
 
-# Giriş kontrolü
+# --- Giriş Kontrolü ve Sayfa Kurulumu ---
 if not st.session_state.get("authentication_status"):
     st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
     st.stop()
 
+load_css()
+
 # --- AYARLAR SAYFASI ---
 st.markdown("""
 <div class="main-header">
-    <h1>⚙️ Ayarlar</h1>
-    <p>API bağlantılarını yapılandırın. Ayarlarınız şifrelenir ve otomatik olarak kaydedilir.</p>
+    <h1>⚙️ Ayarlar & Bağlantı Durumu</h1>
+    <p>Mevcut API ayarları aşağıda listelenmiştir. Bu ayarlar Streamlit Cloud üzerinden yönetilmektedir.</p>
 </div>
 """, unsafe_allow_html=True)
 
-# Test fonksiyonları
-def test_shopify_connection(store, token):
-    try:
-        api = ShopifyAPI(store, token)
-        result = api.test_connection()
-        st.session_state.shopify_status = 'connected'
-        st.session_state.shopify_data = result
-        st.success("✅ Shopify bağlantısı başarılı!")
-    except Exception as e:
-        st.session_state.shopify_status = 'failed'
-        st.error(f"❌ Shopify Bağlantısı kurulamadı: {e}")
+st.info("💡 Buradaki tüm bilgiler, uygulamanızın Streamlit Cloud'daki 'Secrets' bölümünden okunmaktadır. Değişikliklerin kalıcı olması için sırlarınızı oradan yönetmelisiniz.")
 
-def test_sentos_connection(url, key, secret, cookie):
-    try:
-        api = SentosAPI(url, key, secret, cookie)
-        result = api.test_connection()
-        if result.get('success'):
-            st.session_state.sentos_status = 'connected'
-            st.session_state.sentos_data = result
-            st.success(f"✅ Sentos bağlantısı başarılı! {result.get('total_products', 0)} ürün bulundu.")
-        else:
-            raise Exception(result.get('message', 'Bilinmeyen hata'))
-    except Exception as e:
-        st.session_state.sentos_status = 'failed'
-        st.error(f"❌ Sentos Bağlantısı kurulamadı: {e}")
-
-# --- AYAR FORMU ---
-with st.form("settings_form"):
-    st.subheader("🔗 API Ayarları")
+# --- Ayar Görüntüleme Bölümü ---
+with st.container(border=True):
+    st.subheader("🔗 Mevcut API Ayarları")
     col1, col2 = st.columns(2)
     
     with col1:
         st.markdown("<h5>🏪 Shopify Ayarları</h5>", unsafe_allow_html=True)
-        shopify_store = st.text_input("Mağaza URL", value=st.session_state.get('shopify_store', ''), placeholder="your-store.myshopify.com")
-        shopify_token = st.text_input("Erişim Token'ı", value=st.session_state.get('shopify_token', ''), type="password")
+        # st.session_state'den değeri al, eğer yoksa bir mesaj göster.
+        st.text_input("Mağaza URL", value=st.session_state.get('shopify_store', 'Değer Bulunamadı'), disabled=True)
+        st.text_input("Erişim Token'ı", value="********" if st.session_state.get('shopify_token') else 'Değer Bulunamadı', type="password", disabled=True)
     
     with col2:
         st.markdown("<h5><img src='https://api.sentos.com.tr/img/favicon.png' width=20> Sentos API Ayarları</h5>", unsafe_allow_html=True)
-        sentos_api_url = st.text_input("Sentos API URL", value=st.session_state.get('sentos_api_url', ''), placeholder="https://stildiva.sentos.com.tr/api")
-        sentos_api_key = st.text_input("Sentos API Key", value=st.session_state.get('sentos_api_key', ''))
-        sentos_api_secret = st.text_input("Sentos API Secret", value=st.session_state.get('sentos_api_secret', ''), type="password")
-        sentos_cookie = st.text_input("Sentos API Cookie", value=st.session_state.get('sentos_cookie', ''), type="password", help="Resim sırasını doğru çekmek için Sentos panelinden alınan Cookie değeri.")
+        st.text_input("Sentos API URL", value=st.session_state.get('sentos_api_url', 'Değer Bulunamadı'), disabled=True)
+        st.text_input("Sentos API Key", value=st.session_state.get('sentos_api_key', 'Değer Bulunamadı'), disabled=True)
+        st.text_input("Sentos API Secret", value="********" if st.session_state.get('sentos_api_secret') else 'Değer Bulunamadı', type="password", disabled=True)
+        st.text_input("Sentos API Cookie", value="********" if st.session_state.get('sentos_cookie') else 'Değer Bulunamadı', type="password", disabled=True)
 
-    st.markdown("---")
+with st.container(border=True):
     st.subheader("📊 Google E-Tablolar Entegrasyonu")
-    gcp_service_account_json_str = st.text_area(
-        "Google Service Account JSON Anahtarı",
-        value=st.session_state.get('gcp_service_account_json', ''),
-        placeholder="İndirdiğiniz JSON dosyasının içeriğini buraya yapıştırın...",
-        height=250,
-        help="Google E-Tablolar'a veri yazabilmek için gereken servis hesabı anahtarı."
-    )
-    
-    st.markdown("---")
-    submitted = st.form_submit_button("💾 Kaydet ve Bağlantıları Test Et", use_container_width=True, type="primary")
+    gcp_json = st.session_state.get('gcp_service_account_json', '')
+    if gcp_json:
+        try:
+            # Sadece client_email'i göstererek anahtarın varlığını teyit edelim
+            client_email = json.loads(gcp_json).get('client_email', 'JSON formatı hatalı')
+            st.success(f"✅ Google Service Account anahtarı yüklendi. (Hesap: {client_email})")
+        except json.JSONDecodeError:
+            st.error("❌ Yüklenen Google Service Account anahtarı geçerli bir JSON formatında değil.")
+    else:
+        st.warning("⚠️ Google Service Account anahtarı Streamlit Secrets'ta bulunamadı.")
 
-    if submitted:
-        # JSON'ı doğrula
-        is_json_valid = True
-        if gcp_service_account_json_str:
+st.markdown("---")
+
+# --- Bağlantı Testi Bölümü ---
+st.subheader("🧪 Bağlantı Testleri")
+if st.button("🔄 Tüm Bağlantıları Yeniden Test Et", use_container_width=True, type="primary"):
+    with st.spinner("Bağlantılar test ediliyor..."):
+        # Shopify Testi
+        shopify_store = st.session_state.get('shopify_store')
+        shopify_token = st.session_state.get('shopify_token')
+        if shopify_store and shopify_token:
             try:
-                json.loads(gcp_service_account_json_str)
-            except json.JSONDecodeError:
-                st.error("Girdiğiniz Google Service Account anahtarı geçerli bir JSON formatında değil. Lütfen kontrol edin.")
-                is_json_valid = False
-        
-        if is_json_valid:
-            current_username = st.session_state.get("username")
-            if not current_username:
-                st.error("Kullanıcı adı bulunamadı. Lütfen tekrar giriş yapın.")
-            elif config_manager.save_user_keys(
-                username=current_username,
-                shopify_store=shopify_store,
-                shopify_token=shopify_token,
-                sentos_api_url=sentos_api_url,
-                sentos_api_key=sentos_api_key,
-                sentos_api_secret=sentos_api_secret,
-                sentos_cookie=sentos_cookie,
-                gcp_service_account_json=gcp_service_account_json_str
-            ):
-                st.success("✅ Ayarlarınız kaydedildi ve şifrelendi!")
-                
-                # Session state'i güncelle
-                st.session_state.update({
-                    'shopify_store': shopify_store, 'shopify_token': shopify_token,
-                    'sentos_api_url': sentos_api_url, 'sentos_api_key': sentos_api_key,
-                    'sentos_api_secret': sentos_api_secret, 'sentos_cookie': sentos_cookie,
-                    'gcp_service_account_json': gcp_service_account_json_str
-                })
-                
-                # Bağlantıları yeniden test et
-                st.info("Yeni ayarlarla bağlantılar yeniden test ediliyor...")
-                if shopify_store and shopify_token:
-                    test_shopify_connection(shopify_store, shopify_token)
-                if sentos_api_url and sentos_api_key and sentos_api_secret:
-                    test_sentos_connection(sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie)
-            else:
-                st.error("❌ Ayarlar kaydedilemedi.")
+                api = ShopifyAPI(shopify_store, shopify_token)
+                result = api.test_connection()
+                st.session_state.shopify_status = 'connected'
+                st.session_state.shopify_data = result
+                st.success(f"✅ Shopify bağlantısı başarılı! ({result.get('name')})")
+            except Exception as e:
+                st.session_state.shopify_status = 'failed'
+                st.error(f"❌ Shopify Bağlantısı kurulamadı: {e}")
+        else:
+            st.warning("Shopify bilgileri eksik, test edilemedi.")
+
+        # Sentos Testi
+        sentos_url = st.session_state.get('sentos_api_url')
+        sentos_key = st.session_state.get('sentos_api_key')
+        sentos_secret = st.session_state.get('sentos_api_secret')
+        sentos_cookie = st.session_state.get('sentos_cookie')
+        if sentos_url and sentos_key:
+            try:
+                api = SentosAPI(sentos_url, sentos_key, sentos_secret, sentos_cookie)
+                result = api.test_connection()
+                if result.get('success'):
+                    st.session_state.sentos_status = 'connected'
+                    st.session_state.sentos_data = result
+                    st.success(f"✅ Sentos bağlantısı başarılı! ({result.get('total_products', 0)} ürün bulundu.)")
+                else:
+                    raise Exception(result.get('message', 'Bilinmeyen hata'))
+            except Exception as e:
+                st.session_state.sentos_status = 'failed'
+                st.error(f"❌ Sentos Bağlantısı kurulamadı: {e}")
+        else:
+            st.warning("Sentos bilgileri eksik, test edilemedi.")
