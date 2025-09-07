@@ -1,12 +1,11 @@
-# shopify_sync.py
+# shopify_sync.py (SKU Eşleştirme Mantığı İyileştirildi)
 
 """
 Sentos API'den Shopify'a Ürün Senkronizasyonu Mantık Dosyası
-Versiyon 22.8: Eksik Ürün Oluşturma Eklentisi
-- YENİ ÖZELLİK: `sync_missing_products_only` fonksiyonu eklendi. Bu fonksiyon,
-  Sentos'taki tüm ürünleri Shopify ile karşılaştırır ve sadece Shopify'da
-  olmayan ürünleri, orijinal `create_new_product` mantığını kullanarak oluşturur.
-- UYUMLULUK: Tüm fonksiyonlar, sağlanan orijinal kod temel alınarak birleştirilmiştir.
+Versiyon 23.0: SKU Eşleştirme ve Raporlama Güncellemesi
+- GÜNCELLEME: `get_variant_ids_by_skus` fonksiyonu, özel karakterlere karşı
+  daha dayanıklı hale getirildi ve eşleşmeyen SKU'ları loglamak için
+  geliştirildi.
 """
 import requests
 import time
@@ -41,7 +40,7 @@ class ShopifyAPI:
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/22.8-Missing-Products-Feature'
+            'User-Agent': 'Sentos-Sync-Python/23.0-SKU-Matching-Update'
         }
         self.product_cache = {}
         self.location_id = None
@@ -49,10 +48,10 @@ class ShopifyAPI:
     def _make_request(self, method, endpoint, data=None, is_graphql=False):
         url = self.graphql_url if is_graphql else f"{self.rest_base_url}/{endpoint}"
         try:
-            time.sleep(0.51) # Her istek arasına genel bir bekleme süresi koyuyoruz
+            time.sleep(0.51)
             response = requests.request(method, url, headers=self.headers, json=data, timeout=90)
             
-            if response.status_code == 429: # HTTP 429 rate limit hatası
+            if response.status_code == 429:
                 retry_after = int(response.headers.get('Retry-After', 10))
                 logging.warning(f"Shopify API rate limit'e takıldı (HTTP 429). {retry_after} saniye bekleniyor...")
                 time.sleep(retry_after)
@@ -66,34 +65,29 @@ class ShopifyAPI:
 
     def execute_graphql(self, query, variables=None):
         payload = {'query': query, 'variables': variables or {}}
-        
-        # API yavaşlatma (Throttling) için akıllı yeniden deneme mantığı
         max_retries = 5
         for attempt in range(max_retries):
             response_data = self._make_request('POST', '', data=payload, is_graphql=True)
             
             if "errors" in response_data:
                 errors = response_data["errors"]
-                # Sadece "THROTTLED" hatası varsa bekle ve yeniden dene
                 is_throttled = any(err.get('extensions', {}).get('code') == 'THROTTLED' for err in errors)
 
                 if is_throttled and attempt < max_retries - 1:
-                    wait_time = 2 * (attempt + 1)  # 2, 4, 6, 8 saniye gibi artan bekleme
+                    wait_time = 2 * (attempt + 1)
                     logging.warning(f"GraphQL API rate limit'e takıldı (THROTTLED). {wait_time} saniye sonra yeniden denenecek... (Deneme {attempt + 1}/{max_retries})")
                     time.sleep(wait_time)
-                    continue  # Döngünün başına dön ve tekrar dene
+                    continue
                 
-                # Başka bir hata varsa veya son deneme ise hatayı göster ve işlemi durdur
                 error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in errors]
                 logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(errors, indent=2)}")
                 raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
 
-            # Hata yoksa veriyi döndür ve döngüden çık
             return response_data.get("data", {})
         
-        # Bu satıra sadece tüm denemeler başarısız olursa ulaşılır
         raise Exception("GraphQL isteği, API limitleri nedeniyle birden fazla denemeden sonra başarısız oldu.")
     
+    # ... (Diğer ShopifyAPI fonksiyonları değişmeden kalır) ...
     def _get_product_media_details(self, product_gid):
         try:
             query = """
@@ -229,9 +223,7 @@ class ShopifyAPI:
             'plan': shop_data.get('plan', {}).get('displayName', 'N/A')
         }
 
-    # --- EXCEL RAPORU İÇİN YENİ FONKSİYONLAR ---
     def get_all_collections(self, progress_callback=None):
-        """Mağazadaki tüm koleksiyonları ID ve başlıklarıyla birlikte çeker."""
         all_collections = []
         query = """
         query getCollections($cursor: String) {
@@ -270,7 +262,6 @@ class ShopifyAPI:
         return all_collections
 
     def get_all_products_for_export(self, progress_callback=None):
-        """Tüm ürünleri, varyantları ve koleksiyon bilgilerini Excel export için çeker."""
         all_products = []
         query = """
         query getProductsForExport($cursor: String) {
@@ -340,21 +331,33 @@ class ShopifyAPI:
         logging.info(f"Export için toplam {len(all_products)} ürün çekildi.")
         return all_products
     
-    # YENİ FONKSİYON 1: SKU'LARA GÖRE VARYANT ID'LERİNİ ÇEKER
+    # <<< GÜNCELLEME BAŞLANGICI: SKU Eşleştirme Fonksiyonu Yenilendi >>>
     def get_variant_ids_by_skus(self, skus: list) -> dict:
-        """Verilen SKU listesine karşılık gelen Shopify varyant GID'lerini toplu olarak çeker."""
+        """
+        Verilen SKU listesine karşılık gelen Shopify varyant GID'lerini toplu olarak çeker.
+        Özel karakterlere karşı daha dayanıklıdır ve bulunamayan SKU'ları loglar.
+        """
         if not skus:
             return {}
 
-        logging.info(f"{len(skus)} adet SKU için varyant ID'leri aranıyor...")
+        # Gelen SKU listesindeki tüm elemanların string olduğundan emin ol
+        sanitized_skus = [str(sku).strip() for sku in skus if sku]
+        if not sanitized_skus:
+            return {}
+            
+        logging.info(f"{len(sanitized_skus)} adet SKU için varyant ID'leri aranıyor...")
         sku_map = {}
-        # Sorguyu 50'li gruplar halinde yaparız ki URL çok uzamasın
-        for i in range(0, len(skus), 50):
-            sku_chunk = skus[i:i + 50]
-            query_filter = " OR ".join([f"sku:'{sku.strip()}'" for sku in sku_chunk])
+        
+        # Sorguyu 50'li gruplar halinde yap
+        for i in range(0, len(sanitized_skus), 50):
+            sku_chunk = sanitized_skus[i:i + 50]
+            
+            # SKU'ları JSON formatına uygun hale getirerek sorguya ekle
+            # Bu yöntem, SKU içindeki özel karakterlere karşı daha güvenlidir.
+            query_filter = " OR ".join([f"sku:{json.dumps(sku)}" for sku in sku_chunk])
             
             query = """
-            query getVariantIds($query: String!) {
+            query getVariantIdsBySku($query: String!) {
               productVariants(first: 250, query: $query) {
                 edges {
                   node {
@@ -374,15 +377,22 @@ class ShopifyAPI:
                         sku_map[node["sku"]] = node["id"]
             except Exception as e:
                 logging.error(f"SKU grubu {i//50+1} için varyant ID'leri alınırken hata: {e}")
+
+        # Eşleşme Raporlaması
+        found_skus = set(sku_map.keys())
+        all_skus_set = set(sanitized_skus)
+        not_found_skus = all_skus_set - found_skus
+
+        if not_found_skus:
+            logging.warning(f"Shopify'da bulunamayan {len(not_found_skus)} adet SKU tespit edildi.")
+            # Sadece ilk 10 tanesini loglayarak log kirliliğini önle
+            logging.warning(f"Bulunamayan SKU'lar (ilk 10): {list(not_found_skus)[:10]}")
         
         logging.info(f"Toplam {len(sku_map)} eşleşen varyant ID'si bulundu.")
         return sku_map
+    # <<< GÜNCELLEME SONU >>>
 
-    # YENİ FONKSİYON 2: VARYANT FİYATLARINI TOPLU GÜNCELLER
     def bulk_update_variant_prices(self, price_updates: list) -> dict:
-        """
-        Verilen varyant listesinin fiyat ve karşılaştırma fiyatını toplu olarak günceller.
-        """
         if not price_updates:
             return {"success": 0, "failed": 0, "errors": []}
 
@@ -397,8 +407,6 @@ class ShopifyAPI:
             if "compare_at_price" in update_data:
                  price_input["compareAtPrice"] = update_data.get("compare_at_price")
 
-            # GraphQL sorgusuna, Shopify'ın doğru yorumlaması için keyfi bir operasyon adı ("VariantPriceUpdate") eklendi.
-            # Bu, sorgunun geri kalanını veya başka bir fonksiyonu etkilemez.
             mutation = """
             mutation VariantPriceUpdate($input: ProductVariantInput!) {
               productVariantUpdate(input: $input) {
@@ -432,8 +440,7 @@ class ShopifyAPI:
         
         return results
 
-# --- Sentos API Sınıfı ---
-# ... (Bu kısımda değişiklik yok, olduğu gibi kalabilir)
+# ... (SentosAPI ve diğer sınıflar/fonksiyonlar değişmeden kalır) ...
 class SentosAPI:
     def __init__(self, api_url, api_key, api_secret, api_cookie=None):
         self.api_url = api_url.strip().rstrip('/')
@@ -490,7 +497,8 @@ class SentosAPI:
                         f"Sentos'tan ürünler çekiliyor ({len(all_products)} / {total_elements})... "
                         f"Geçen süre: {int(elapsed_time)}s"
                     )
-                    progress_callback({'message': message})
+                    progress = int((len(all_products) / total_elements) * 100) if isinstance(total_elements, int) and total_elements > 0 else 0
+                    progress_callback({'message': message, 'progress': progress})
                 
                 if len(products_on_page) < page_size: break
                 page += 1
@@ -561,8 +569,6 @@ class SentosAPI:
             raise
 
 
-# --- Senkronizasyon Yöneticisi ---
-# ... (Bu sınıfta değişiklik yapılmadı, olduğu gibi kalabilir)
 class ProductSyncManager:
     def __init__(self, shopify_api, sentos_api):
         self.shopify = shopify_api
@@ -911,7 +917,6 @@ class ProductSyncManager:
         finally:
             with self._lock: self.stats['processed'] += 1
 
-# --- Ana Fonksiyonlar ---
 def sync_products_from_sentos_api(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, test_mode, progress_callback, stop_event, max_workers=3, sync_mode="Tam Senkronizasyon (Tümünü Oluştur ve Güncelle)"):
     start_time = time.monotonic()
     try:
@@ -1007,20 +1012,15 @@ def sync_missing_products_only(store_url, access_token, sentos_api_url, sentos_a
         logging.critical(f"Eksik ürün senkronizasyonunda kritik hata: {e}\n{traceback.format_exc()}")
         progress_callback({'status': 'error', 'message': str(e)})
 
-# Cron job'lar için olan fonksiyonu, yeni callback yapısına uyumsuz olduğu
-# ve mevcut arayüzde kullanılmadığı için sadeleştiriyoruz.
 def run_sync_for_cron(store_url, access_token, sentos_api_url, sentos_api_key, sentos_api_secret, sentos_cookie, sync_mode, max_workers):
     logging.info(f"Cron job başlatıldı. Mod: {sync_mode}")
-    # Callback fonksiyonu loglama yapar
     def cron_progress_callback(update):
         if 'message' in update:
             logging.info(update['message'])
         if 'log_detail' in update:
-            # HTML tag'lerini temizleyerek log'a yaz
             clean_log = re.sub('<[^<]+?>', '', update['log_detail'])
             logging.info(clean_log)
 
-    # Durdurma olayı cron'da kullanılmaz
     stop_event = threading.Event()
     
     sync_products_from_sentos_api(
