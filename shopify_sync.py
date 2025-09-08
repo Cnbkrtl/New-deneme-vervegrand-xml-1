@@ -369,7 +369,7 @@ class ShopifyAPI:
                 progress_callback({'progress': progress, 'message': f'Güncelleniyor: {i+1}/{total}'})
             
             mutation = """
-            mutation productVariantUpdate($input: ProductVariantInput!) {
+            mutation ($input: ProductVariantInput!) {
                 productVariantUpdate(input: $input) {
                     productVariant { id }
                     userErrors { field message }
