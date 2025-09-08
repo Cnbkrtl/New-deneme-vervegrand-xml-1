@@ -125,11 +125,18 @@ if st.session_state.df_for_display is None:
                     st.error("❌ Sentos API'den hiç ürün verisi gelmedi.")
                     progress_bar.empty()
                 else:
+                    # process_sentos_data fonksiyonu iki tablo döndürür: varyantlar ve ana ürünler.
+                    # İKİSİNİ DE ALIYORUZ.
                     df_variants, df_main = process_sentos_data(all_products)
+                    
+                    # DETAYLI VARYANT LİSTESİNİ ARKA PLAN İÇİN SAKLIYORUZ.
                     st.session_state.df_variants = df_variants
+                    
+                    # ANA ÜRÜN LİSTESİNİ ARAYÜZDE GÖSTERMEK İÇİN SAKLIYORUZ.
                     st.session_state.df_for_display = df_main
+                    
                     progress_bar.empty()
-                    st.toast("Veriler Sentos'tan çekildi.")
+                    st.toast(f"Veriler Sentos'tan çekildi. {len(df_main)} ana ürün ve {len(df_variants)} varyant hafızaya alındı.")
                     st.rerun()
             except Exception as e: 
                 if 'progress_bar' in locals():
@@ -235,7 +242,7 @@ if st.session_state.calculated_df is not None:
         update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
         if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary"):
             if st.session_state.df_variants is None or st.session_state.df_variants.empty:
-                st.error("Shopify'a göndermek için gereken detaylı varyant listesi hafızada bulunamadı. Lütfen işleme 'Sentos'tan Yeni Fiyat Listesi Çek' adımıyla başlayın.")
+                st.error("Shopify'a göndermek için gereken detaylı varyant listesi hafızada bulunamadı...")
             else:
                 progress_bar = st.progress(0, text="Güncelleme işlemi başlatılıyor...")
                 def shopify_progress_callback(data):

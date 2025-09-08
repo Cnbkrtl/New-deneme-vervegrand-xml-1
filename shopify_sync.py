@@ -430,7 +430,7 @@ class ShopifyAPI:
                 }
             }
             """
-            upload_vars = { "input": { "resource": "BULK_MUTATION_VARIABLES", "filename": "price_updates.jsonl", "mimeType": "application/jsonl", "httpMethod": "POST" } }
+            upload_vars = { "input": [{ "resource": "BULK_MUTATION_VARIABLES", "filename": "price_updates.jsonl", "mimeType": "application/jsonl", "httpMethod": "POST" }] }
             upload_result = self.execute_graphql(upload_mutation, upload_vars)
             
             if not upload_result.get("stagedUploadsCreate", {}).get("stagedTargets"):
