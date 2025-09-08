@@ -433,11 +433,14 @@ class ShopifyAPI:
             upload_vars = { "input": [{ "resource": "BULK_MUTATION_VARIABLES", "filename": "price_updates.jsonl", "mimeType": "application/jsonl", "httpMethod": "POST" }] }
             upload_result = self.execute_graphql(upload_mutation, upload_vars)
             
-            if not upload_result.get("stagedUploadsCreate", {}).get("stagedTargets"):
-                errors = upload_result.get("stagedUploadsCreate", {}).get("userErrors", [])
-                raise Exception(f"Staged upload URL'i alınamadı: {errors}")
+            staged_data = upload_result.get("stagedUploadsCreate")
+            if not staged_data or not staged_data.get("stagedTargets"):
+                user_errors = staged_data.get("userErrors", []) if staged_data else "stagedUploadsCreate mutation'ı null (boş) sonuç döndürdü."
+                error_message = f"Staged upload URL'i alınamadı. Sebebi: {user_errors}"
+                logging.error(error_message)
+                raise Exception(error_message)
 
-            target = upload_result["stagedUploadsCreate"]["stagedTargets"][0]
+            target = staged_data["stagedTargets"][0]
             upload_url = target["url"]
             staged_resource_url = target["resourceUrl"]
             
