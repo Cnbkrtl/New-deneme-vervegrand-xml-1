@@ -40,19 +40,18 @@ class ShopifyAPI:
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/23.0-SKU-Matching-Update'
+            'User-Agent': 'Sentos-Sync-Python/23.2-Bulk-Upload-Fix'
         }
         self.product_cache = {}
         self.location_id = None
 
-    def _make_request(self, method, endpoint, data=None, is_graphql=False, headers=None):
-        url = self.graphql_url if is_graphql else endpoint
+    def _make_request(self, method, url, data=None, is_graphql=False, headers=None):
         req_headers = headers if headers is not None else self.headers
         
         try:
-            # GraphQL olmayan (REST) istekler için base_url'i ekle
+            # GraphQL olmayan (REST) ve tam URL olmayan istekler için base_url'i ekle
             if not is_graphql and not url.startswith('http'):
-                 url = f"{self.rest_base_url}/{endpoint}"
+                 url = f"{self.rest_base_url}/{url}"
 
             time.sleep(0.51)
             response = requests.request(method, url, headers=req_headers, 
@@ -64,7 +63,7 @@ class ShopifyAPI:
                 retry_after = int(response.headers.get('Retry-After', 10))
                 logging.warning(f"Shopify API rate limit'e takıldı (HTTP 429). {retry_after} saniye bekleniyor...")
                 time.sleep(retry_after)
-                return self._make_request(method, endpoint, data, is_graphql, headers)
+                return self._make_request(method, url, data, is_graphql, headers)
             
             response.raise_for_status()
 
@@ -72,8 +71,10 @@ class ShopifyAPI:
                 return response.json()
             return response
         except requests.exceptions.RequestException as e:
-            logging.error(f"Shopify API Bağlantı Hatası ({url}): {e}")
-            raise
+            # Hata mesajını daha anlaşılır yap
+            error_content = e.response.text if e.response else "No response"
+            logging.error(f"Shopify API Bağlantı Hatası ({url}): {e} - Response: {error_content}")
+            raise Exception(f"API Hatası: {e} - {error_content}")
 
     def execute_graphql(self, query, variables=None):
         payload = {'query': query, 'variables': variables or {}}
@@ -340,38 +341,18 @@ class ShopifyAPI:
     
     # <<< GÜNCELLEME BAŞLANGICI: SKU Eşleştirme Fonksiyonu Yenilendi >>>
     def get_variant_ids_by_skus(self, skus: list) -> dict:
-        """
-        Verilen SKU listesine karşılık gelen Shopify varyant GID'lerini toplu olarak çeker.
-        Özel karakterlere karşı daha dayanıklıdır ve bulunamayan SKU'ları loglar.
-        """
-        if not skus:
-            return {}
-
-        # Gelen SKU listesindeki tüm elemanların string olduğundan emin ol
+        if not skus: return {}
         sanitized_skus = [str(sku).strip() for sku in skus if sku]
-        if not sanitized_skus:
-            return {}
-            
+        if not sanitized_skus: return {}
         logging.info(f"{len(sanitized_skus)} adet SKU için varyant ID'leri aranıyor...")
         sku_map = {}
-        
-        # Sorguyu 50'li gruplar halinde yap
         for i in range(0, len(sanitized_skus), 50):
             sku_chunk = sanitized_skus[i:i + 50]
-            
-            # SKU'ları JSON formatına uygun hale getirerek sorguya ekle
-            # Bu yöntem, SKU içindeki özel karakterlere karşı daha güvenlidir.
             query_filter = " OR ".join([f"sku:{json.dumps(sku)}" for sku in sku_chunk])
-            
             query = """
             query getVariantIdsBySku($query: String!) {
               productVariants(first: 250, query: $query) {
-                edges {
-                  node {
-                    id
-                    sku
-                  }
-                }
+                edges { node { id sku } }
               }
             }
             """
@@ -384,20 +365,14 @@ class ShopifyAPI:
                         sku_map[node["sku"]] = node["id"]
             except Exception as e:
                 logging.error(f"SKU grubu {i//50+1} için varyant ID'leri alınırken hata: {e}")
-
-        # Eşleşme Raporlaması
         found_skus = set(sku_map.keys())
         all_skus_set = set(sanitized_skus)
         not_found_skus = all_skus_set - found_skus
-
         if not_found_skus:
             logging.warning(f"Shopify'da bulunamayan {len(not_found_skus)} adet SKU tespit edildi.")
-            # Sadece ilk 10 tanesini loglayarak log kirliliğini önle
             logging.warning(f"Bulunamayan SKU'lar (ilk 10): {list(not_found_skus)[:10]}")
-        
         logging.info(f"Toplam {len(sku_map)} eşleşen varyant ID'si bulundu.")
         return sku_map
-    # <<< GÜNCELLEME SONU >>>
 
     def bulk_update_variant_prices(self, price_updates: list, progress_callback=None) -> dict:
         if not price_updates:
@@ -428,9 +403,11 @@ class ShopifyAPI:
         upload_url = target["url"]
         staged_resource_url = target["resourceUrl"]
         
+        # DÜZELTME: Shopify'ın verdiği parametreleri header olarak kullan
+        upload_headers = {param['name']: param['value'] for param in target['parameters']}
+        
         if progress_callback: progress_callback({'progress': 40, 'message': 'Veriler Shopify\'a yükleniyor...'})
-        # Dosya yükleme için application/jsonl header'ı ile _make_request çağrısı
-        self._make_request("POST", upload_url, data=jsonl_bytes, headers={'Content-Type': 'application/jsonl'})
+        self._make_request("POST", upload_url, data=jsonl_bytes, headers=upload_headers)
 
         if progress_callback: progress_callback({'progress': 55, 'message': 'Toplu güncelleme işlemi başlatılıyor...'})
         bulk_mutation = f"""
