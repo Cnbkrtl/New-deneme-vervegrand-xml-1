@@ -1,11 +1,10 @@
-# shopify_sync.py (SKU Eşleştirme Mantığı İyileştirildi)
+# shopify_sync.py (SKU Eşleştirme ve Fiyat Güncelleme Düzeltildi v3)
 
 """
 Sentos API'den Shopify'a Ürün Senkronizasyonu Mantık Dosyası
-Versiyon 23.0: SKU Eşleştirme ve Raporlama Güncellemesi
-- GÜNCELLEME: `get_variant_ids_by_skus` fonksiyonu, özel karakterlere karşı
-  daha dayanıklı hale getirildi ve eşleşmeyen SKU'ları loglamak için
-  geliştirildi.
+Versiyon 23.5: Staged Upload Sağlamlaştırması ve Fallback Mekanizması
+- GÜNCELLEME: `bulk_update_variant_prices` fonksiyonunda hata durumunda otomatik fallback
+- YENİ: `update_variant_prices_individually` fonksiyonu ile tek tek güncelleme desteği
 """
 import requests
 import time
@@ -36,34 +35,27 @@ class ShopifyAPI:
         self.store_url = store_url if store_url.startswith('http') else f"https://{store_url.strip()}"
         self.access_token = access_token
         self.graphql_url = f"{self.store_url}/admin/api/2024-04/graphql.json"
-        self.rest_base_url = f"{self.store_url}/admin/api/2024-04"
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/23.2-Bulk-Upload-Fix'
+            'User-Agent': 'Sentos-Sync-Python/23.5-Fallback'
         }
         self.product_cache = {}
         self.location_id = None
 
-    def _make_request(self, method, url, data=None, is_graphql=False, headers=None):
+    def _make_request(self, method, url, data=None, is_graphql=False, headers=None, files=None):
         req_headers = headers if headers is not None else self.headers
         
         try:
-            # GraphQL olmayan (REST) ve tam URL olmayan istekler için base_url'i ekle
             if not is_graphql and not url.startswith('http'):
-                 url = f"{self.rest_base_url}/{url}"
+                 url = f"{self.store_url}/admin/api/2024-04/{url}"
 
             time.sleep(0.51)
             response = requests.request(method, url, headers=req_headers, 
                                         json=data if isinstance(data, dict) else None, 
-                                        data=data if isinstance(data, bytes) else None, 
+                                        data=data if isinstance(data, bytes) else None,
+                                        files=files,
                                         timeout=90)
-            
-            if response.status_code == 429:
-                retry_after = int(response.headers.get('Retry-After', 10))
-                logging.warning(f"Shopify API rate limit'e takıldı (HTTP 429). {retry_after} saniye bekleniyor...")
-                time.sleep(retry_after)
-                return self._make_request(method, url, data, is_graphql, headers)
             
             response.raise_for_status()
 
@@ -71,31 +63,19 @@ class ShopifyAPI:
                 return response.json()
             return response
         except requests.exceptions.RequestException as e:
-            # Hata mesajını daha anlaşılır yap
             error_content = e.response.text if e.response else "No response"
             logging.error(f"Shopify API Bağlantı Hatası ({url}): {e} - Response: {error_content}")
             raise Exception(f"API Hatası: {e} - {error_content}")
 
     def execute_graphql(self, query, variables=None):
         payload = {'query': query, 'variables': variables or {}}
-        max_retries = 5
-        for attempt in range(max_retries):
-            response_data = self._make_request('POST', self.graphql_url, data=payload, is_graphql=True)
-            if "errors" in response_data:
-                errors = response_data["errors"]
-                is_throttled = any(err.get('extensions', {}).get('code') == 'THROTTLED' for err in errors)
-                if is_throttled and attempt < max_retries - 1:
-                    wait_time = 2 * (attempt + 1)
-                    logging.warning(f"GraphQL API rate limit'e takıldı (THROTTLED). {wait_time} saniye sonra yeniden denenecek...")
-                    time.sleep(wait_time)
-                    continue
-                error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in errors]
-                logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(errors, indent=2)}")
-                raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
-            return response_data.get("data", {})
-        raise Exception("GraphQL isteği, API limitleri nedeniyle birden fazla denemeden sonra başarısız oldu.")
+        response_data = self._make_request('POST', self.graphql_url, data=payload, is_graphql=True)
+        if "errors" in response_data:
+            error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in response_data["errors"]]
+            logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(response_data['errors'], indent=2)}")
+            raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
+        return response_data.get("data", {})
     
-    # ... (Diğer ShopifyAPI fonksiyonları değişmeden kalır) ...
     def _get_product_media_details(self, product_gid):
         try:
             query = """
@@ -198,7 +178,7 @@ class ShopifyAPI:
 
     def load_all_products(self, progress_callback=None):
         total_loaded = 0
-        endpoint = f'{self.rest_base_url}/products.json?limit=250&fields=id,title,variants'
+        endpoint = f'{self.store_url}/admin/api/2024-04/products.json?limit=250&fields=id,title,variants'
         
         while endpoint:
             if progress_callback: progress_callback({'message': f"Shopify ürünleri önbelleğe alınıyor... {total_loaded} ürün bulundu."})
@@ -339,7 +319,6 @@ class ShopifyAPI:
         logging.info(f"Export için toplam {len(all_products)} ürün çekildi.")
         return all_products
     
-    # <<< GÜNCELLEME BAŞLANGICI: SKU Eşleştirme Fonksiyonu Yenilendi >>>
     def get_variant_ids_by_skus(self, skus: list) -> dict:
         if not skus: return {}
         sanitized_skus = [str(sku).strip() for sku in skus if sku]
@@ -374,72 +353,148 @@ class ShopifyAPI:
         logging.info(f"Toplam {len(sku_map)} eşleşen varyant ID'si bulundu.")
         return sku_map
 
+    def update_variant_prices_individually(self, price_updates: list, progress_callback=None) -> dict:
+        """Fiyatları tek tek GraphQL mutations ile günceller (staged upload yerine)"""
+        if not price_updates:
+            return {"success": 0, "failed": 0, "errors": []}
+        
+        success_count = 0
+        failed_count = 0
+        errors = []
+        total = len(price_updates)
+        
+        for i, update in enumerate(price_updates):
+            if progress_callback:
+                progress = int((i / total) * 100)
+                progress_callback({'progress': progress, 'message': f'Güncelleniyor: {i+1}/{total}'})
+            
+            mutation = """
+            mutation productVariantUpdate($input: ProductVariantInput!) {
+                productVariantUpdate(input: $input) {
+                    productVariant { id }
+                    userErrors { field message }
+                }
+            }
+            """
+            
+            variant_input = {
+                "id": update["variant_id"],
+                "price": update["price"]
+            }
+            if "compare_at_price" in update and update["compare_at_price"] is not None:
+                variant_input["compareAtPrice"] = update["compare_at_price"]
+            
+            try:
+                result = self.execute_graphql(mutation, {"input": variant_input})
+                if result.get("productVariantUpdate", {}).get("userErrors"):
+                    failed_count += 1
+                    errors.extend(result["productVariantUpdate"]["userErrors"])
+                else:
+                    success_count += 1
+                time.sleep(0.2)  # Rate limiting
+            except Exception as e:
+                failed_count += 1
+                errors.append(str(e))
+        
+        if progress_callback:
+            progress_callback({'progress': 100, 'message': 'İşlem tamamlandı!'})
+        
+        return {"success": success_count, "failed": failed_count, "errors": errors}
+
     def bulk_update_variant_prices(self, price_updates: list, progress_callback=None) -> dict:
         if not price_updates:
             return {"success": 0, "failed": 0, "errors": []}
-
-        if progress_callback: progress_callback({'progress': 10, 'message': 'Güncelleme dosyası hazırlanıyor...'})
-        jsonl_data = ""
-        for update in price_updates:
-            price_input = {"id": update["variant_id"], "price": update["price"]}
-            if "compare_at_price" in update and update["compare_at_price"] is not None:
-                price_input["compareAtPrice"] = update["compare_at_price"]
-            jsonl_data += json.dumps({"input": price_input}) + "\n"
         
-        jsonl_bytes = jsonl_data.encode('utf-8')
-
-        if progress_callback: progress_callback({'progress': 25, 'message': 'Shopify yükleme alanı hazırlanıyor...'})
-        upload_mutation = """
-        mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
-            stagedUploadsCreate(input: $input) {
-                stagedTargets { url resourceUrl parameters { name value } }
-                userErrors { field message }
-            }
-        }
-        """
-        upload_vars = { "input": { "resource": "BULK_MUTATION_VARIABLES", "filename": "price_updates.jsonl", "mimeType": "application/jsonl", "httpMethod": "POST" } }
-        upload_result = self.execute_graphql(upload_mutation, upload_vars)
-        target = upload_result["stagedUploadsCreate"]["stagedTargets"][0]
-        upload_url = target["url"]
-        staged_resource_url = target["resourceUrl"]
+        # Eğer 50'den az güncelleme varsa, tek tek güncelle (daha güvenilir)
+        if len(price_updates) <= 50:
+            return self.update_variant_prices_individually(price_updates, progress_callback)
         
-        # DÜZELTME: Shopify'ın verdiği parametreleri header olarak kullan
-        upload_headers = {param['name']: param['value'] for param in target['parameters']}
-        
-        if progress_callback: progress_callback({'progress': 40, 'message': 'Veriler Shopify\'a yükleniyor...'})
-        self._make_request("POST", upload_url, data=jsonl_bytes, headers=upload_headers)
-
-        if progress_callback: progress_callback({'progress': 55, 'message': 'Toplu güncelleme işlemi başlatılıyor...'})
-        bulk_mutation = f"""
-        mutation {{
-            bulkOperationRunMutation(
-                mutation: "mutation call($input: ProductVariantInput!) {{ productVariantUpdate(input: $input) {{ productVariant {{ id }} userErrors {{ field message }} }} }}",
-                stagedUploadPath: "{staged_resource_url}"
-            ) {{
-                bulkOperation {{ id status }}
-                userErrors {{ field message }}
-            }}
-        }}
-        """
-        bulk_result = self.execute_graphql(bulk_mutation)
-        bulk_op = bulk_result["bulkOperationRunMutation"]["bulkOperation"]
-        
-        while bulk_op["status"] in ["CREATED", "RUNNING"]:
-            if progress_callback: progress_callback({'progress': 75, 'message': f'Shopify işlemi yürütüyor... (Durum: {bulk_op["status"]})'})
-            time.sleep(5)
-            status_query = "query { currentBulkOperation { id status errorCode objectCount } }"
-            status_result = self.execute_graphql(status_query)
-            bulk_op = status_result["currentBulkOperation"]
-
-        if progress_callback: progress_callback({'progress': 100, 'message': 'İşlem tamamlandı!'})
-
-        if bulk_op["status"] == "COMPLETED":
-            count = int(bulk_op.get("objectCount", len(price_updates)))
-            return {"success": count, "failed": 0, "errors": []}
-        else:
-            error = f"Toplu işlem başarısız oldu. Durum: {bulk_op['status']}, Hata Kodu: {bulk_op.get('errorCode')}"
-            return {"success": 0, "failed": len(price_updates), "errors": [error]}
+        # 50'den fazla güncelleme için staged upload kullan
+        try:
+            if progress_callback: progress_callback({'progress': 10, 'message': 'Güncelleme dosyası hazırlanıyor...'})
             
+            jsonl_data = ""
+            for update in price_updates:
+                price_input = {"id": update["variant_id"], "price": update["price"]}
+                if "compare_at_price" in update and update["compare_at_price"] is not None:
+                    price_input["compareAtPrice"] = update["compare_at_price"]
+                jsonl_data += json.dumps({"input": price_input}) + "\n"
+            jsonl_bytes = jsonl_data.encode('utf-8')
+
+            if progress_callback: progress_callback({'progress': 25, 'message': 'Shopify yükleme alanı hazırlanıyor...'})
+            upload_mutation = """
+            mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
+                stagedUploadsCreate(input: $input) {
+                    stagedTargets { url resourceUrl parameters { name value } }
+                    userErrors { field message }
+                }
+            }
+            """
+            upload_vars = { "input": { "resource": "BULK_MUTATION_VARIABLES", "filename": "price_updates.jsonl", "mimeType": "application/jsonl", "httpMethod": "POST" } }
+            upload_result = self.execute_graphql(upload_mutation, upload_vars)
+            
+            if not upload_result.get("stagedUploadsCreate", {}).get("stagedTargets"):
+                errors = upload_result.get("stagedUploadsCreate", {}).get("userErrors", [])
+                raise Exception(f"Staged upload URL'i alınamadı: {errors}")
+
+            target = upload_result["stagedUploadsCreate"]["stagedTargets"][0]
+            upload_url = target["url"]
+            staged_resource_url = target["resourceUrl"]
+            
+            if progress_callback: progress_callback({'progress': 40, 'message': 'Veriler Shopify\'a yükleniyor...'})
+            
+            # multipart/form-data isteğini oluştur
+            # Shopify'ın beklediği format: parametreler data olarak, dosya files olarak ayrı gönderilmeli
+            form_data = {param['name']: param['value'] for param in target['parameters']}
+            files = {'file': ('price_updates.jsonl', jsonl_bytes, 'application/jsonl')}
+            
+            try:
+                # Form verisini ve dosyayı ayrı olarak gönder
+                upload_response = requests.post(upload_url, data=form_data, files=files, timeout=90)
+                upload_response.raise_for_status()
+            except requests.exceptions.RequestException as e:
+                error_content = e.response.text if e.response else "No response body"
+                logging.error(f"Staged upload sırasında hata oluştu. URL: {upload_url}, Status: {e.response.status_code if e.response else 'N/A'}, Response: {error_content}")
+                # Staged upload başarısız olursa, tek tek güncellemeye geç
+                logging.info("Staged upload başarısız oldu, tek tek güncelleme yöntemine geçiliyor...")
+                return self.update_variant_prices_individually(price_updates, progress_callback)
+
+            if progress_callback: progress_callback({'progress': 55, 'message': 'Toplu güncelleme işlemi başlatılıyor...'})
+            bulk_mutation = f"""
+            mutation {{
+                bulkOperationRunMutation(
+                    mutation: "mutation call($input: ProductVariantInput!) {{ productVariantUpdate(input: $input) {{ productVariant {{ id }} userErrors {{ field message }} }} }}",
+                    stagedUploadPath: "{staged_resource_url}"
+                ) {{
+                    bulkOperation {{ id status }}
+                    userErrors {{ field message }}
+                }}
+            }}
+            """
+            bulk_result = self.execute_graphql(bulk_mutation)
+            bulk_op = bulk_result["bulkOperationRunMutation"]["bulkOperation"]
+            
+            while bulk_op["status"] in ["CREATED", "RUNNING"]:
+                if progress_callback: progress_callback({'progress': 75, 'message': f'Shopify işlemi yürütüyor... (Durum: {bulk_op["status"]})'})
+                time.sleep(5)
+                status_query = "query { currentBulkOperation { id status errorCode objectCount } }"
+                status_result = self.execute_graphql(status_query)
+                bulk_op = status_result["currentBulkOperation"]
+
+            if progress_callback: progress_callback({'progress': 100, 'message': 'İşlem tamamlandı!'})
+
+            if bulk_op["status"] == "COMPLETED":
+                count = int(bulk_op.get("objectCount", len(price_updates)))
+                return {"success": count, "failed": 0, "errors": []}
+            else:
+                error = f"Toplu işlem başarısız oldu. Durum: {bulk_op['status']}, Hata Kodu: {bulk_op.get('errorCode')}"
+                return {"success": 0, "failed": len(price_updates), "errors": [error]}
+                
+        except Exception as e:
+            logging.error(f"Bulk update hatası: {e}. Tek tek güncellemeye geçiliyor...")
+            # Herhangi bir hata durumunda tek tek güncellemeye geç
+            return self.update_variant_prices_individually(price_updates, progress_callback)
+
 # ... (SentosAPI ve diğer sınıflar/fonksiyonlar değişmeden kalır) ...
 class SentosAPI:
     def __init__(self, api_url, api_key, api_secret, api_cookie=None):
