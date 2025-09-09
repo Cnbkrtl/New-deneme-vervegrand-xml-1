@@ -1,10 +1,10 @@
-# shopify_sync.py (SKU Eşleştirme ve Fiyat Güncelleme Düzeltildi v3)
+# shopify_sync.py (Throttling Hatasına Karşı Otomatik Yeniden Deneme Eklendi v4)
 
 """
 Sentos API'den Shopify'a Ürün Senkronizasyonu Mantık Dosyası
-Versiyon 23.5: Staged Upload Sağlamlaştırması ve Fallback Mekanizması
-- GÜNCELLEME: `bulk_update_variant_prices` fonksiyonunda hata durumunda otomatik fallback
-- YENİ: `update_variant_prices_individually` fonksiyonu ile tek tek güncelleme desteği
+Versiyon 23.6: Throttling (API Limit) Hatasına Karşı Sağlamlaştırma
+- GÜNCELLEME: `execute_graphql` fonksiyonuna "exponential backoff" ile otomatik yeniden deneme mekanizması eklendi.
+- Bu sayede, yoğun istek anlarında alınan "Throttled" hataları otomatik olarak yönetilir ve senkronizasyonun kesilmesi engellenir.
 """
 import requests
 import time
@@ -38,7 +38,7 @@ class ShopifyAPI:
         self.headers = {
             'X-Shopify-Access-Token': access_token,
             'Content-Type': 'application/json',
-            'User-Agent': 'Sentos-Sync-Python/23.5-Fallback'
+            'User-Agent': 'Sentos-Sync-Python/23.6-Throttling-Retry'
         }
         self.product_cache = {}
         self.location_id = None
@@ -50,7 +50,9 @@ class ShopifyAPI:
             if not is_graphql and not url.startswith('http'):
                  url = f"{self.store_url}/admin/api/2024-04/{url}"
 
-            time.sleep(0.51)
+            # API limitlerine takılmamak için her istek arasında küçük bir bekleme süresi koymak iyi bir pratiktir.
+            time.sleep(0.51) 
+            
             response = requests.request(method, url, headers=req_headers, 
                                         json=data if isinstance(data, dict) else None, 
                                         data=data if isinstance(data, bytes) else None,
@@ -68,14 +70,53 @@ class ShopifyAPI:
             raise Exception(f"API Hatası: {e} - {error_content}")
 
     def execute_graphql(self, query, variables=None):
+        """
+        GraphQL sorgusunu çalıştırır ve 'Throttled' hatası durumunda
+        otomatik olarak yeniden deneme yapar.
+        """
         payload = {'query': query, 'variables': variables or {}}
-        response_data = self._make_request('POST', self.graphql_url, data=payload, is_graphql=True)
-        if "errors" in response_data:
-            error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in response_data["errors"]]
-            logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(response_data['errors'], indent=2)}")
-            raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
-        return response_data.get("data", {})
-    
+        max_retries = 5
+        initial_backoff = 1.0  # saniye
+
+        for attempt in range(max_retries):
+            try:
+                response_data = self._make_request('POST', self.graphql_url, data=payload, is_graphql=True)
+                
+                if "errors" in response_data:
+                    # Hatanın 'Throttled' olup olmadığını kontrol et
+                    is_throttled = any(
+                        err.get("extensions", {}).get("code") == "THROTTLED"
+                        for err in response_data["errors"]
+                    )
+
+                    if is_throttled and attempt < max_retries - 1:
+                        wait_time = initial_backoff * (2 ** attempt)
+                        logging.warning(
+                            f"GraphQL isteği API limitine takıldı (Throttled). "
+                            f"{wait_time:.2f} saniye sonra yeniden denenecek... (Deneme {attempt + 1}/{max_retries})"
+                        )
+                        time.sleep(wait_time)
+                        continue  # Döngünün başına dön ve tekrar dene
+                    else:
+                        # Throttled değilse veya son deneme de başarısızsa hatayı yükselt
+                        error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in response_data["errors"]]
+                        logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(response_data['errors'], indent=2)}")
+                        raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
+
+                return response_data.get("data", {})
+
+            except Exception as e:
+                # _make_request'ten gelen diğer hataları yakala
+                logging.error(f"GraphQL yürütme sırasında kritik hata: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = initial_backoff * (2 ** attempt)
+                    time.sleep(wait_time) # Bağlantı hatalarında da beklemek faydalı olabilir
+                else:
+                    raise  # Tüm denemeler başarısız olursa son hatayı yükselt
+
+        # Bu noktaya gelinmemeli, ancak güvenlik için bir fallback
+        raise Exception(f"GraphQL sorgusu {max_retries} denemenin ardından başarısız oldu.")
+
     def _get_product_media_details(self, product_gid):
         try:
             query = """
@@ -446,19 +487,15 @@ class ShopifyAPI:
             
             if progress_callback: progress_callback({'progress': 40, 'message': 'Veriler Shopify\'a yükleniyor...'})
             
-            # multipart/form-data isteğini oluştur
-            # Shopify'ın beklediği format: parametreler data olarak, dosya files olarak ayrı gönderilmeli
             form_data = {param['name']: param['value'] for param in target['parameters']}
             files = {'file': ('price_updates.jsonl', jsonl_bytes, 'application/jsonl')}
             
             try:
-                # Form verisini ve dosyayı ayrı olarak gönder
                 upload_response = requests.post(upload_url, data=form_data, files=files, timeout=90)
                 upload_response.raise_for_status()
             except requests.exceptions.RequestException as e:
                 error_content = e.response.text if e.response else "No response body"
                 logging.error(f"Staged upload sırasında hata oluştu. URL: {upload_url}, Status: {e.response.status_code if e.response else 'N/A'}, Response: {error_content}")
-                # Staged upload başarısız olursa, tek tek güncellemeye geç
                 logging.info("Staged upload başarısız oldu, tek tek güncelleme yöntemine geçiliyor...")
                 return self.update_variant_prices_individually(price_updates, progress_callback)
 
@@ -495,7 +532,6 @@ class ShopifyAPI:
                 
         except Exception as e:
             logging.error(f"Bulk update hatası: {e}. Tek tek güncellemeye geçiliyor...")
-            # Herhangi bir hata durumunda tek tek güncellemeye geç
             return self.update_variant_prices_individually(price_updates, progress_callback)
 
 # ... (SentosAPI ve diğer sınıflar/fonksiyonlar değişmeden kalır) ...
