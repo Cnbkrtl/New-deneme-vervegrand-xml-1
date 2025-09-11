@@ -8,8 +8,8 @@ import re
 project_path = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_path)
 
-# GÜNCELLEME: Ana senkronizasyon fonksiyonunu doğrudan içe aktarıyoruz.
-from shopify_sync import sync_products_from_sentos_api
+# YENİ: Ana senkronizasyon fonksiyonunu yeni runner dosyasından içe aktarıyoruz.
+from sync_runner import sync_products_from_sentos_api
 
 # Temel loglama ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -42,9 +42,6 @@ def main():
         sys.exit(1)
 
     try:
-        # GÜNCELLEME: `run_sync_for_cron` fonksiyonunun yaptığı işi buraya taşıdık.
-        # Bu, `AttributeError` hatasını ortadan kaldırır.
-        
         # 1. Callback fonksiyonunu tanımla (loglama için)
         def cron_progress_callback(update):
             if 'message' in update:
@@ -69,7 +66,7 @@ def main():
             progress_callback=cron_progress_callback,
             stop_event=stop_event,
             sync_mode=sync_mode_to_run,
-            max_workers=10
+            max_workers=10 # Zamanlanmış görev için worker sayısını ayarlayabilirsiniz
         )
         
         logging.info(f"Zamanlanmış senkronizasyon (Mod: {sync_mode_to_run}) başarıyla tamamlandı.")

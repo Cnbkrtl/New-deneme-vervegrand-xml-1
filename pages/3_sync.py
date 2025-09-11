@@ -1,4 +1,4 @@
-# 3_sync.py
+# pages/3_sync.py (Güncellenmiş Sürüm)
 
 import streamlit as st
 import threading
@@ -15,13 +15,34 @@ def load_css():
     except FileNotFoundError:
         pass
 
-# Arka plandaki ana senkronizasyon fonksiyonlarını içe aktarıyoruz
-from shopify_sync import (
-    sync_products_from_sentos_api, 
-    sync_missing_products_only, 
+# YENİ: Arka plandaki ana senkronizasyon fonksiyonlarını yeni runner dosyasından içe aktarıyoruz.
+# sync_runner.py dosyasında, bu sayfanın bozulmaması için orijinal fonksiyon isimleri korunmuştur.
+from sync_runner import (
+    sync_products_from_sentos_api,
+    sync_missing_products_only,
     sync_single_product_by_sku
 )
-# from log_manager import save_log # Henüz log kaydetme eklenmedi
+
+# --- Session State Başlatma ---
+if 'sync_running' not in st.session_state:
+    st.session_state.sync_running = False
+# ... (Diğer session_state tanımlamaları aynı kalır) ...
+
+# --- Giriş Kontrolü ---
+if not st.session_state.get("authentication_status"):
+    st.error("Bu sayfaya erişmek için lütfen giriş yapın.")
+    st.stop()
+
+# --- (Sayfanın geri kalanı, fonksiyon çağrıları aynı isimlerle yapıldığı için DEĞİŞMEDEN kalabilir) ---
+# Örnek olarak, thread başlatma bölümü artık yeni import edilen fonksiyonu doğru şekilde çağıracaktır:
+# thread = threading.Thread(
+#     target=sync_products_from_sentos_api, # Bu artık sync_runner'dan geliyor.
+#     kwargs=thread_kwargs,
+#     daemon=True
+# )
+
+# --- Tam Kod ---
+# (Yukarıdaki import değişikliği dışında dosyanın geri kalan içeriği aynıdır)
 
 # --- Session State Başlatma ---
 if 'sync_running' not in st.session_state:
@@ -47,10 +68,6 @@ if 'stop_sync_event' not in st.session_state:
 if 'progress_queue' not in st.session_state:
     st.session_state.progress_queue = queue.Queue()
 
-# --- Giriş Kontrolü ---
-if not st.session_state.get("authentication_status"):
-    st.error("Bu sayfaya erişmek için lütfen giriş yapın.")
-    st.stop()
 
 # --- Sayfa Başlığı ---
 st.markdown("""

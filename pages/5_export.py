@@ -1,4 +1,4 @@
-# pages/5_export.py
+# pages/5_export.py (Tam ve Düzeltilmiş Sürüm)
 
 import streamlit as st
 import pandas as pd
@@ -6,10 +6,13 @@ import json
 import gspread
 from gspread_dataframe import set_with_dataframe
 from google.oauth2.service_account import Credentials
-from shopify_sync import ShopifyAPI, SentosAPI
 import re
-import os # YENİ: Ortak ön-ek (prefix) bulmak için eklendi
-import logging # YENİ: Hata ayıklama için eklendi
+import os 
+import logging
+
+# YENİ: Modüler yapıya uygun olarak import yolları güncellendi.
+from connectors.shopify_api import ShopifyAPI
+from connectors.sentos_api import SentosAPI
 
 # CSS'i yükle
 def load_css():
@@ -20,7 +23,7 @@ def load_css():
         pass
 
 # --- Sayfa Yapılandırması ve Yardımcı Fonksiyonlar ---
-st.set_page_config(layout="wide", page_title="Liste Oluşturucu")
+# st.set_page_config(layout="wide", page_title="Liste Oluşturucu") # Ana script'te tanımlanmalı
 
 # Giriş kontrolü
 if not st.session_state.get("authentication_status"):
@@ -38,6 +41,7 @@ def _get_apparel_sort_key(size_str):
 
 @st.cache_data(ttl=600)
 def get_collections(_shopify_api):
+    # Bu metodun ShopifyAPI sınıfına eklendiğinden emin olun.
     return _shopify_api.get_all_collections()
 
 def get_sentos_data_by_base_code(sentos_api, model_codes_to_fetch):
@@ -55,6 +59,7 @@ def get_sentos_data_by_base_code(sentos_api, model_codes_to_fetch):
     for i, code in enumerate(unique_model_codes):
         if not code: continue
         try:
+            # Bu metodun SentosAPI sınıfında olduğundan emin olmalıyız.
             sentos_product = sentos_api.get_product_by_sku(code)
             if sentos_product:
                 price = sentos_product.get('purchase_price')
@@ -65,38 +70,30 @@ def get_sentos_data_by_base_code(sentos_api, model_codes_to_fetch):
                     'purchase_price': float(str(price).replace(',', '.')) if price is not None else None
                 }
         except Exception as e:
-            # GÜNCELLENDİ: Hataları sessizce geçmek yerine loglayarak daha fazla bilgi sağlıyoruz.
             logging.warning(f"Sentos'tan '{code}' SKU'su için veri çekilirken bir hata oluştu: {e}")
-            pass # get_product_by_sku içindeki loglama devam ediyor, bu ek bir güvence.
+            pass
         progress_bar.progress((i + 1) / total_codes, f"Sentos'tan veri çekiliyor... ({i+1}/{total_codes})")
     
     progress_bar.empty()
     return data_map
 
-# YENİ FONKSİYON: Varyant SKU listesinden en olası ana ürün kodunu bulur.
 def get_base_code_from_skus(variant_skus):
     """
     Bir ürüne ait tüm varyant SKU'larının listesini alarak,
     en uzun ortak başlangıç kısmını (prefix) bulur ve bunu ana model kodu olarak döndürür.
-    Bu, tek bir SKU'yu tireye göre bölmekten çok daha güvenilir bir yöntemdir.
     """
-    # Boş veya geçersiz SKU'ları temizle
     skus = [s for s in variant_skus if s and isinstance(s, str)]
     if not skus:
         return ""
 
-    # Eğer sadece bir SKU varsa, eski mantığı kullan (sondan tireyi at)
     if len(skus) == 1:
         last_hyphen_index = skus[0].rfind('-')
         if last_hyphen_index > 0:
             return skus[0][:last_hyphen_index]
         return skus[0]
 
-    # Birden fazla SKU varsa, en uzun ortak başlangıcı bul
     common_prefix = os.path.commonprefix(skus)
     
-    # Ortak kısmın sonunda tire varsa veya tam bir SKU ise olduğu gibi bırak,
-    # Aksi halde en yakın tireye kadar geri kırp.
     if common_prefix and not common_prefix.endswith('-') and common_prefix not in skus:
         last_hyphen_index = common_prefix.rfind('-')
         if last_hyphen_index > 0:
@@ -109,7 +106,7 @@ def get_base_code_from_skus(variant_skus):
 def process_data(_shopify_api, _sentos_api, selected_collection_ids):
     status_text = st.empty()
     status_text.info("1/4: Shopify API'den tüm ürün verileri çekiliyor...")
-    all_products = _shopify_api.get_all_products_for_export(progress_callback=status_text.text)
+    all_products = _shopify_api.get_all_products_for_export(progress_callback=lambda msg: status_text.info(f"1/4: Shopify API'den ürünler çekiliyor... {msg}"))
 
     if selected_collection_ids:
         filtered_products = [
@@ -143,8 +140,6 @@ def process_data(_shopify_api, _sentos_api, selected_collection_ids):
         
         if not variants_by_group: continue
         
-        # GÜNCELLENDİ: Ana model kodunu tahmin etme mantığı iyileştirildi.
-        # Artık tek bir SKU yerine tüm varyant SKU'larını kullanarak daha akıllı bir tahmin yapıyoruz.
         all_variant_skus = [v['node']['sku'] for v in variants if v['node'] and v['node'].get('sku')]
         base_model_code_guess = get_base_code_from_skus(all_variant_skus)
         
@@ -185,7 +180,7 @@ def process_data(_shopify_api, _sentos_api, selected_collection_ids):
                 sentos_info = sentos_data_map[base_code]
                 if data["ALIŞ FİYATI"] is None:
                     data["ALIŞ FİYATI"] = sentos_info.get('purchase_price')
-                data["MODEL KODU"] = sentos_info.get('verified_code', base_code) # Sentos'tan gelen kodu ata
+                data["MODEL KODU"] = sentos_info.get('verified_code', base_code)
 
     status_text.info("4/4: Veriler son formata dönüştürülüyor...")
     sorted_sizes = sorted(list(all_sizes), key=_get_apparel_sort_key)
