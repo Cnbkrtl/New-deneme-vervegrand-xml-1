@@ -1,4 +1,4 @@
-# pages/5_export.py (Alış Fiyatı Düzeltilmiş Sürüm)
+# pages/5_export.py (Fiyatlar Sadece Sentos'tan Alınacak Şekilde Güncellendi)
 
 import streamlit as st
 import pandas as pd
@@ -59,25 +59,19 @@ def get_sentos_data_by_base_code(sentos_api, model_codes_to_fetch):
         try:
             sentos_product = sentos_api.get_product_by_sku(code)
             if sentos_product:
-                # --- GÜNCELLEME BAŞLANGICI: Dökümana uygun yeni fiyat bulma mantığı ---
                 price = None
-                # 1. Önce ana üründeki 'purchase_price' alanını kontrol et.
                 main_price = sentos_product.get('purchase_price')
                 
-                # Fiyatın hem varlığını hem de 0'dan büyük olduğunu kontrol et
                 if main_price and float(str(main_price).replace(',', '.')) > 0:
                     price = main_price
                 else:
-                    # 2. Ana üründe fiyat yoksa veya sıfırsa, varyantları kontrol et.
                     variants = sentos_product.get('variants', [])
                     if variants:
                         for variant in variants:
-                            # Varyant içindeki 'purchase_price' alanına bak.
                             variant_price = variant.get('purchase_price')
                             if variant_price and float(str(variant_price).replace(',', '.')) > 0:
                                 price = variant_price
-                                break # İlk geçerli fiyatı bulduğumuzda döngüden çık
-                # --- GÜNCELLEME SONU ---
+                                break
                 
                 verified_main_code = sentos_product.get('sku', code)
                 data_map[code] = {
@@ -94,69 +88,65 @@ def get_sentos_data_by_base_code(sentos_api, model_codes_to_fetch):
 
 def get_base_code_from_skus(variant_skus):
     """
-    Bir ürüne ait tüm varyant SKU'larının listesini alarak,
-    en uzun ortak başlangıç kısmını (prefix) bulur ve bunu ana model kodu olarak döndürür.
+    Bir ürüne ait tüm varyant SKU'larının listesini alarak ana model kodunu bulur.
     """
     skus = [s for s in variant_skus if s and isinstance(s, str)]
-    if not skus:
-        return ""
-
+    if not skus: return ""
     if len(skus) == 1:
         last_hyphen_index = skus[0].rfind('-')
-        if last_hyphen_index > 0:
-            return skus[0][:last_hyphen_index]
+        if last_hyphen_index > 0: return skus[0][:last_hyphen_index]
         return skus[0]
-
     common_prefix = os.path.commonprefix(skus)
-    
     if common_prefix and not common_prefix.endswith('-') and common_prefix not in skus:
         last_hyphen_index = common_prefix.rfind('-')
-        if last_hyphen_index > 0:
-            return common_prefix[:last_hyphen_index]
-    
+        if last_hyphen_index > 0: return common_prefix[:last_hyphen_index]
     return common_prefix.strip('-')
 
 
 @st.cache_data(ttl=600)
 def process_data(_shopify_api, _sentos_api, selected_collection_ids):
+    # --- YENİ MANTIK BAŞLANGICI ---
     status_text = st.empty()
-    status_text.info("1/4: Shopify API'den tüm ürün verileri çekiliyor...")
+    
+    # Adım 1: Shopify'dan temel ürün bilgilerini (stok, görsel vb.) çek
+    status_text.info("1/4: Shopify API'den ürün verileri çekiliyor...")
     all_products = _shopify_api.get_all_products_for_export(progress_callback=lambda msg: status_text.info(f"1/4: Shopify API'den ürünler çekiliyor... {msg}"))
 
+    # Seçilen koleksiyonlara göre filtrele
+    products_data = all_products
     if selected_collection_ids:
-        filtered_products = [
+        products_data = [
             p for p in all_products 
             if p.get('collections') and not {c['node']['id'] for c in p['collections']['edges']}.isdisjoint(selected_collection_ids)
         ]
-        products_data = filtered_products
-    else:
-        products_data = all_products
     
-    status_text.info(f"2/4: {len(products_data)} ürün rapor için işleniyor...")
-    processed_data, all_sizes, codes_with_no_price = {}, set(), set()
+    # Adım 2: Shopify verisini işle ve Sentos'tan fiyat almak için TÜM model kodlarını topla
+    status_text.info(f"2/4: {len(products_data)} ürün işleniyor ve model kodları toplanıyor...")
+    processed_data, all_sizes, all_base_codes_to_fetch = {}, set(), set()
 
     for product in products_data:
         variants = product.get('variants', {}).get('edges', [])
         if not variants: continue
         
+        all_variant_skus = [v['node']['sku'] for v in variants if v['node'] and v['node'].get('sku')]
+        base_model_code = get_base_code_from_skus(all_variant_skus)
+        if base_model_code:
+            all_base_codes_to_fetch.add(base_model_code)
+        
+        # Ürünleri renk bazında grupla
         variants_by_group = {}
         has_color_option = any('renk' in opt['name'].lower() for v in variants if v.get('node', {}).get('selectedOptions') for opt in v['node']['selectedOptions'])
-
         for v_edge in variants:
             v = v_edge['node']
             if not v or not v.get('selectedOptions'): continue
             group_key = 'N/A'
             if has_color_option:
-                color_option = next((opt['value'] for opt in v['selectedOptions'] if opt['name'].lower() == 'renk'), None)
-                if color_option is None: continue
+                color_option = next((opt['value'] for opt in v['selectedOptions'] if opt['name'].lower() == 'renk'), 'N/A')
                 group_key = color_option
             if group_key not in variants_by_group: variants_by_group[group_key] = []
             variants_by_group[group_key].append(v)
         
         if not variants_by_group: continue
-        
-        all_variant_skus = [v['node']['sku'] for v in variants if v['node'] and v['node'].get('sku')]
-        base_model_code_guess = get_base_code_from_skus(all_variant_skus)
         
         collection_names = ", ".join([c['node']['title'] for c in product.get('collections', {}).get('edges', [])])
         
@@ -165,7 +155,8 @@ def process_data(_shopify_api, _sentos_api, selected_collection_ids):
             image_data = product.get('featuredImage')
             image_url = image_data.get('url', '') if image_data else ''
             
-            row = {"TÜR": collection_names, "GÖRSEL_URL": image_url, "MODEL KODU": base_model_code_guess,
+            # Alış fiyatı başlangıçta boş bırakılıyor
+            row = {"TÜR": collection_names, "GÖRSEL_URL": image_url, "MODEL KODU": base_model_code,
                    "ÜRÜN LİNKİ": f"{_shopify_api.store_url}/products/{product['handle']}",
                    "RENK": group_key if has_color_option else '', "sizes": {}, "ALIŞ FİYATI": None}
 
@@ -176,34 +167,31 @@ def process_data(_shopify_api, _sentos_api, selected_collection_ids):
                 row["sizes"][size_value] = stock
                 total_stock += stock
                 all_sizes.add(size_value)
-                if row["ALIŞ FİYATI"] is None:
-                    unit_cost = variant.get('inventoryItem', {}).get('unitCost')
-                    if unit_cost and unit_cost.get('amount') is not None:
-                        row["ALIŞ FİYATI"] = float(unit_cost['amount'])
 
             row["TOPLAM STOK"] = total_stock
-            if row["ALIŞ FİYATI"] is None and base_model_code_guess:
-                codes_with_no_price.add(base_model_code_guess)
             processed_data[key] = row
 
-    if codes_with_no_price:
-        status_text.info(f"3/4: Shopify'da bulunamayan {len(codes_with_no_price)} ürün için Sentos'tan alış fiyatı çekiliyor...")
-        sentos_data_map = get_sentos_data_by_base_code(_sentos_api, list(codes_with_no_price))
-        for data in processed_data.values():
-            base_code = data.get("MODEL KODU")
-            if base_code in sentos_data_map:
-                sentos_info = sentos_data_map[base_code]
-                if data["ALIŞ FİYATI"] is None:
-                    data["ALIŞ FİYATI"] = sentos_info.get('purchase_price')
-                data["MODEL KODU"] = sentos_info.get('verified_code', base_code)
+    # Adım 3: Toplanan TÜM model kodları için Sentos'tan toplu halde fiyatları çek
+    sentos_data_map = {}
+    if all_base_codes_to_fetch:
+        status_text.info(f"3/4: {len(all_base_codes_to_fetch)} ürün için Sentos'tan alış fiyatları çekiliyor...")
+        sentos_data_map = get_sentos_data_by_base_code(_sentos_api, list(all_base_codes_to_fetch))
 
-    status_text.info("4/4: Veriler son formata dönüştürülüyor...")
+    # Adım 4: Sentos'tan gelen fiyatları ve doğrulanmış model kodlarını ürün verisine işle
+    status_text.info("4/4: Fiyatlar ve ürün bilgileri birleştiriliyor...")
+    for data in processed_data.values():
+        base_code = data.get("MODEL KODU")
+        if base_code in sentos_data_map:
+            sentos_info = sentos_data_map[base_code]
+            data["ALIŞ FİYATI"] = sentos_info.get('purchase_price')
+            data["MODEL KODU"] = sentos_info.get('verified_code', base_code)
+
+    # Adım 5: Nihai tabloyu oluştur
     sorted_sizes = sorted(list(all_sizes), key=_get_apparel_sort_key)
     final_rows = []
     for data in processed_data.values():
         new_row = {
-            "TÜR": data["TÜR"],
-            "GÖRSEL": f'=IMAGE("{data["GÖRSEL_URL"]}")' if data["GÖRSEL_URL"] else '',
+            "TÜR": data["TÜR"], "GÖRSEL": f'=IMAGE("{data["GÖRSEL_URL"]}")' if data["GÖRSEL_URL"] else '',
             "MODEL KODU": data["MODEL KODU"], "ÜRÜN LİNKİ": data["ÜRÜN LİNKİ"], "RENK": data["RENK"]
         }
         for size in sorted_sizes: new_row[size] = data["sizes"].get(size, 0)
@@ -218,6 +206,7 @@ def process_data(_shopify_api, _sentos_api, selected_collection_ids):
     df = pd.DataFrame(final_rows)
     status_text.empty()
     return df
+    # --- YENİ MANTIK SONU ---
 
 def upload_to_gsheets(df, sheet_name):
     try:
@@ -254,7 +243,7 @@ if st.session_state.get('shopify_status') != 'connected' or not st.session_state
 
 try:
     shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
-    sentos_api = SentOSAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
+    sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
     
     collections = get_collections(shopify_api)
     if not collections:
