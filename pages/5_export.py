@@ -1,4 +1,4 @@
-# pages/5_export.py (Tam ve Düzeltilmiş Sürüm)
+# pages/5_export.py (Alış Fiyatı Düzeltilmiş Sürüm)
 
 import streamlit as st
 import pandas as pd
@@ -10,7 +10,7 @@ import re
 import os 
 import logging
 
-# YENİ: Modüler yapıya uygun olarak import yolları güncellendi.
+# Modüler yapıya uygun olarak import yolları
 from connectors.shopify_api import ShopifyAPI
 from connectors.sentos_api import SentosAPI
 
@@ -23,7 +23,6 @@ def load_css():
         pass
 
 # --- Sayfa Yapılandırması ve Yardımcı Fonksiyonlar ---
-# st.set_page_config(layout="wide", page_title="Liste Oluşturucu") # Ana script'te tanımlanmalı
 
 # Giriş kontrolü
 if not st.session_state.get("authentication_status"):
@@ -41,32 +40,45 @@ def _get_apparel_sort_key(size_str):
 
 @st.cache_data(ttl=600)
 def get_collections(_shopify_api):
-    # Bu metodun ShopifyAPI sınıfına eklendiğinden emin olun.
     return _shopify_api.get_all_collections()
 
 def get_sentos_data_by_base_code(sentos_api, model_codes_to_fetch):
     """
     Verilen ANA ürün kodları listesini kullanarak Sentos'tan alış fiyatı ve doğrulanmış ana kod bilgisini çeker.
     """
-    data_map = {} # Key: base_model_code, Value: {'purchase_price': ...}
+    data_map = {}
     unique_model_codes = list(set(model_codes_to_fetch))
     total_codes = len(unique_model_codes)
     if total_codes == 0:
         return {}
 
-    progress_bar = st.progress(0, "Sentos'tan veri çekiliyor...")
+    progress_bar = st.progress(0, "Sentos'tan alış fiyatları çekiliyor...")
     
     for i, code in enumerate(unique_model_codes):
         if not code: continue
         try:
-            # Bu metodun SentosAPI sınıfında olduğundan emin olmalıyız.
             sentos_product = sentos_api.get_product_by_sku(code)
             if sentos_product:
-                # --- GÜNCELLEME BURADA ---
-                # Hem 'purchase_price' hem de 'AlisFiyati' alanlarını kontrol et
-                price = sentos_product.get('purchase_price') or sentos_product.get('AlisFiyati')
+                # --- GÜNCELLEME BAŞLANGICI: Dökümana uygun yeni fiyat bulma mantığı ---
+                price = None
+                # 1. Önce ana üründeki 'purchase_price' alanını kontrol et.
+                main_price = sentos_product.get('purchase_price')
                 
-                # Gelen yanıttaki asıl ana SKU'yu doğrula
+                # Fiyatın hem varlığını hem de 0'dan büyük olduğunu kontrol et
+                if main_price and float(str(main_price).replace(',', '.')) > 0:
+                    price = main_price
+                else:
+                    # 2. Ana üründe fiyat yoksa veya sıfırsa, varyantları kontrol et.
+                    variants = sentos_product.get('variants', [])
+                    if variants:
+                        for variant in variants:
+                            # Varyant içindeki 'purchase_price' alanına bak.
+                            variant_price = variant.get('purchase_price')
+                            if variant_price and float(str(variant_price).replace(',', '.')) > 0:
+                                price = variant_price
+                                break # İlk geçerli fiyatı bulduğumuzda döngüden çık
+                # --- GÜNCELLEME SONU ---
+                
                 verified_main_code = sentos_product.get('sku', code)
                 data_map[code] = {
                     'verified_code': verified_main_code,
@@ -75,7 +87,7 @@ def get_sentos_data_by_base_code(sentos_api, model_codes_to_fetch):
         except Exception as e:
             logging.warning(f"Sentos'tan '{code}' SKU'su için veri çekilirken bir hata oluştu: {e}")
             pass
-        progress_bar.progress((i + 1) / total_codes, f"Sentos'tan veri çekiliyor... ({i+1}/{total_codes})")
+        progress_bar.progress((i + 1) / total_codes, f"Sentos'tan alış fiyatları çekiliyor... ({i+1}/{total_codes})")
     
     progress_bar.empty()
     return data_map
@@ -242,7 +254,7 @@ if st.session_state.get('shopify_status') != 'connected' or not st.session_state
 
 try:
     shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
-    sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
+    sentos_api = SentOSAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
     
     collections = get_collections(shopify_api)
     if not collections:
