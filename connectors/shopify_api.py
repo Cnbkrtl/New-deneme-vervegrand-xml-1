@@ -27,7 +27,7 @@ class ShopifyAPI:
         try:
             if not is_graphql and not url.startswith('http'):
                  url = f"{self.store_url}/admin/api/2024-04/{url}"
-            time.sleep(0.51)
+            time.sleep(0.51) # Temel bir gecikme her zaman iyidir.
             response = requests.request(method, url, headers=req_headers, 
                                         json=data if isinstance(data, dict) else None, 
                                         data=data if isinstance(data, bytes) else None,
@@ -81,7 +81,6 @@ class ShopifyAPI:
         
         raise Exception(f"API isteği {max_retries} denemenin ardından başarısız oldu.")
 
-    # YENİ EKLENDİ (5_export.py için gerekli)
     def get_all_collections(self, progress_callback=None):
         all_collections = []
         query = """
@@ -106,7 +105,6 @@ class ShopifyAPI:
         logging.info(f"{len(all_collections)} adet koleksiyon bulundu.")
         return all_collections
 
-    # YENİ EKLENDİ (5_export.py için gerekli)
     def get_all_products_for_export(self, progress_callback=None):
         all_products = []
         query = """
@@ -176,7 +174,7 @@ class ShopifyAPI:
         found_skus = set(sku_map.keys())
         all_skus_set = set(sanitized_skus)
         not_found_skus = all_skus_set - found_skus
-        if not_found_skus:
+        if not_found_us:
             logging.warning(f"Shopify'da bulunamayan {len(not_found_skus)} adet SKU tespit edildi.")
             logging.warning(f"Bulunamayan SKU'lar (ilk 10): {list(not_found_skus)[:10]}")
         logging.info(f"Toplam {len(sku_map)} eşleşen varyant ID'si bulundu.")
