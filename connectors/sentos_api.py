@@ -92,3 +92,22 @@ class SentosAPI:
         except Exception as e:
             logging.error(f"Sıralı resimler çekilirken hata oluştu (Ürün ID: {product_id}): {e}")
             return []
+
+    # --- YENİ EKLENEN FONKSİYON ---
+    def get_product_by_sku(self, sku):
+        """Verilen SKU'ya göre Sentos'tan tek bir ürün çeker."""
+        if not sku:
+            raise ValueError("Aranacak SKU boş olamaz.")
+        endpoint = f"/products?sku={sku.strip()}"
+        try:
+            response = self._make_request("GET", endpoint).json()
+            products = response.get('data', [])
+            if not products:
+                logging.warning(f"Sentos API'de '{sku}' SKU'su ile ürün bulunamadı.")
+                return None
+            logging.info(f"Sentos API'de '{sku}' SKU'su ile ürün bulundu.")
+            # API liste döndürdüğü için ilk elemanı alıyoruz.
+            return products[0]
+        except Exception as e:
+            logging.error(f"Sentos'ta SKU '{sku}' aranırken hata: {e}")
+            raise

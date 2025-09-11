@@ -62,7 +62,10 @@ def get_sentos_data_by_base_code(sentos_api, model_codes_to_fetch):
             # Bu metodun SentosAPI sınıfında olduğundan emin olmalıyız.
             sentos_product = sentos_api.get_product_by_sku(code)
             if sentos_product:
-                price = sentos_product.get('purchase_price')
+                # --- GÜNCELLEME BURADA ---
+                # Hem 'purchase_price' hem de 'AlisFiyati' alanlarını kontrol et
+                price = sentos_product.get('purchase_price') or sentos_product.get('AlisFiyati')
+                
                 # Gelen yanıttaki asıl ana SKU'yu doğrula
                 verified_main_code = sentos_product.get('sku', code)
                 data_map[code] = {
