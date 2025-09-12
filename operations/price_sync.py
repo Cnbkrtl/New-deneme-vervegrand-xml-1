@@ -148,19 +148,19 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
             progress_callback({'progress': progress, 'message': f'Tek tek güncelleniyor: {i+1}/{total}', 'log_detail': log_message})
         
         mutation = """
-            mutation productVariantUpdate($input: ProductVariantInput!) {
-              productVariantUpdate(input: $input) {
-                productVariant {
-                  id
-                  price
-                  compareAtPrice
-                }
-                userErrors {
-                  field
-                  message
-                }
-              }
+        mutation productVariantUpdate($input: ProductVariantInput!) {
+          productVariantUpdate(input: $input) {
+            productVariant {
+              id
+              price
+              compareAtPrice
             }
+            userErrors {
+              field
+              message
+            }
+          }
+        }
         """
         
         variant_input = {"id": update["variant_id"], "price": update["price"]}
