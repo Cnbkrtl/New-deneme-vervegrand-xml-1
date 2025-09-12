@@ -89,10 +89,11 @@ def _update_variant_prices_in_bulk(shopify_api, price_updates: list, progress_ca
 
         if progress_callback: progress_callback({'progress': 55, 'message': 'Toplu güncelleme işlemi başlatılıyor...'})
         
+        # NOTE: GraphQL mutasyonunun sözdizimi düzeltildi.
         bulk_mutation = f"""
 mutation {{
     bulkOperationRunMutation(
-        mutation: "mutation($input: ProductVariantInput!) {{ productVariantUpdate(input: $input) {{ productVariant {{ id }} userErrors {{ field message }} }} }}", 
+        mutation: "mutation ($input: ProductVariantInput!) {{ productVariantUpdate(input: $input) {{ productVariant {{ id }} userErrors {{ field message }} }} }}",
         stagedUploadPath: "{target['resourceUrl']}"
     ) {{
         bulkOperation {{
