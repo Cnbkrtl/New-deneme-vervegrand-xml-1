@@ -56,7 +56,6 @@ def _update_variant_prices_in_bulk(shopify_api, price_updates: list, progress_ca
         
         jsonl_data = ""
         for update in price_updates:
-            # Sadece Shopify'ın beklediği alanları al
             payload = {
                 "id": update["id"],
                 "price": update["price"],
@@ -89,7 +88,6 @@ def _update_variant_prices_in_bulk(shopify_api, price_updates: list, progress_ca
 
         if progress_callback: progress_callback({'progress': 55, 'message': 'Toplu güncelleme işlemi başlatılıyor...'})
         
-        # NOTE: GraphQL mutasyonunun sözdizimi düzeltildi.
         bulk_mutation = f"""
 mutation {{
     bulkOperationRunMutation(
@@ -128,18 +126,52 @@ mutation {{
         
         if progress_callback: progress_callback({'progress': 100, 'message': 'İşlem tamamlandı!'})
 
+        details = []
         if bulk_op["status"] == "COMPLETED":
             count = int(bulk_op.get("objectCount", total_updates))
             logging.info(f"Toplu fiyat güncelleme işlemi başarıyla tamamlandı. {count} varyant güncellendi.")
-            return {"success": count, "failed": 0, "errors": [], "details": [{"status": "success", "message": f"{count} varyant başarıyla güncellendi."}]}
+            
+            # Başarılı olanlar için raporlama
+            for update in price_updates:
+                details.append({
+                    "status": "success",
+                    "sku": update.get("sku"),
+                    "price": update.get("price"),
+                    "reason": "Başarıyla güncellendi.",
+                    "variant_id": update["id"]
+                })
+            
+            return {"success": count, "failed": 0, "errors": [], "details": details}
         else:
             error_message = f"Toplu işlem başarısız oldu. Durum: {bulk_op['status']}, Hata Kodu: {bulk_op.get('errorCode')}. Detaylar: {bulk_op.get('resultFileUrl')}"
             logging.error(error_message)
-            return {"success": 0, "failed": total_updates, "errors": [error_message], "details": [{"status": "failed", "reason": error_message}]}
+            
+            # Başarısız olanlar için raporlama
+            for update in price_updates:
+                details.append({
+                    "status": "failed",
+                    "sku": update.get("sku"),
+                    "price": update.get("price"),
+                    "reason": error_message,
+                    "variant_id": update["id"]
+                })
+            
+            return {"success": 0, "failed": total_updates, "errors": [error_message], "details": details}
                 
     except Exception as e:
         logging.error(f"Toplu fiyat güncelleme sırasında kritik hata: {e}")
-        return {"success": 0, "failed": total_updates, "errors": [str(e)], "details": [{"status": "failed", "reason": str(e)}]}
+        
+        details = []
+        for update in price_updates:
+            details.append({
+                "status": "failed",
+                "sku": update.get("sku"),
+                "price": update.get("price"),
+                "reason": str(e),
+                "variant_id": update["id"]
+            })
+            
+        return {"success": 0, "failed": total_updates, "errors": [str(e)], "details": details}
 
 def _update_prices_individually(shopify_api, price_updates: list, progress_callback=None):
     """Fiyatları tek tek GraphQL mutations ile günceller (fallback metodu)."""
@@ -152,13 +184,8 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
             progress = int((i / total) * 100)
             progress_callback({'progress': progress, 'message': f'Tek tek güncelleniyor: {i+1}/{total}', 'log_detail': log_message})
         
-        # DÜZELTİLMİŞ: productVariantsBulkUpdate kullanarak tek varyant güncelleme
-        # productVariantUpdate deprecated olduğu için bulk mutation'ı tek varyant için kullanıyoruz
-        
-        # Önce varyant ID'sinden Product ID'yi çıkaralım
         variant_gid = update["id"]
         
-        # Product ID'yi bulmak için önce varyant sorgulayalım
         query = """
         query getProductIdFromVariant($id: ID!) {
             productVariant(id: $id) {
@@ -170,14 +197,12 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
         """
         
         try:
-            # Product ID'yi al
             result = shopify_api.execute_graphql(query, {"id": variant_gid})
             product_id = result.get("productVariant", {}).get("product", {}).get("id")
             
             if not product_id:
                 raise Exception(f"Varyant {variant_gid} için product ID bulunamadı")
             
-            # Şimdi productVariantsBulkUpdate mutation'ını kullan
             mutation = """
             mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
                 productVariantsBulkUpdate(productId: $productId, variants: $variants) {
@@ -194,7 +219,6 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
             }
             """
             
-            # Varyant verilerini hazırla
             variant_input = {
                 "id": variant_gid,
                 "price": update["price"]
@@ -203,10 +227,9 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
             if "compareAtPrice" in update and update["compareAtPrice"] is not None:
                 variant_input["compareAtPrice"] = update["compareAtPrice"]
             
-            # Mutation'ı çalıştır
             result = shopify_api.execute_graphql(mutation, {
                 "productId": product_id,
-                "variants": [variant_input] # Tek varyant bile olsa array içinde
+                "variants": [variant_input]
             })
             
             if user_errors := result.get("productVariantsBulkUpdate", {}).get("userErrors"):
@@ -239,9 +262,7 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
                 logging.info(log_message)
                 
         except Exception as e:
-            # Alternatif olarak REST API'yi dene
             try:
-                # Numeric ID'yi al (gid://shopify/ProductVariant/12345 -> 12345)
                 variant_id_numeric = variant_gid.split("/")[-1]
                 endpoint = f"variants/{variant_id_numeric}.json"
                 
@@ -255,7 +276,6 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
                 if "compareAtPrice" in update and update["compareAtPrice"] is not None:
                     variant_data["variant"]["compare_at_price"] = update["compareAtPrice"]
                 
-                # REST API çağrısı
                 response = shopify_api._make_request("PUT", endpoint, data=variant_data)
                 
                 if response and "variant" in response:
