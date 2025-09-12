@@ -174,7 +174,7 @@ class ShopifyAPI:
         found_skus = set(sku_map.keys())
         all_skus_set = set(sanitized_skus)
         not_found_skus = all_skus_set - found_skus
-        if not_found_us:
+        if not_found_skus:
             logging.warning(f"Shopify'da bulunamayan {len(not_found_skus)} adet SKU tespit edildi.")
             logging.warning(f"Bulunamayan SKU'lar (ilk 10): {list(not_found_skus)[:10]}")
         logging.info(f"Toplam {len(sku_map)} eşleşen varyant ID'si bulundu.")

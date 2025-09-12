@@ -14,6 +14,9 @@ class SentosAPI:
         self.auth = HTTPBasicAuth(api_key, api_secret)
         self.api_cookie = api_cookie
         self.headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        # Yeniden deneme ayarları
+        self.max_retries = 3
+        self.base_delay = 5  # saniye cinsinden
 
     def _make_request(self, method, endpoint, auth_type='basic', data=None, params=None, is_internal_call=False):
         if is_internal_call:
@@ -34,12 +37,25 @@ class SentosAPI:
         else:
             auth = self.auth
 
-        try:
-            response = requests.request(method, url, headers=headers, auth=auth, data=data, params=params, timeout=30)
-            response.raise_for_status()
-            return response
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Sentos API Hatası ({url}): {e}")
+        for attempt in range(self.max_retries):
+            try:
+                response = requests.request(method, url, headers=headers, auth=auth, data=data, params=params, timeout=30)
+                response.raise_for_status()
+                return response
+            except requests.exceptions.HTTPError as e:
+                # 500 (Sunucu hatası) ve 429 (Too Many Requests) hatalarında tekrar dene
+                if e.response.status_code in [500, 429] and attempt < self.max_retries - 1:
+                    wait_time = self.base_delay * (2 ** attempt)  # Üstel geri çekilme
+                    logging.warning(f"Sentos API'den 500 veya 429 hatası alındı. {wait_time} saniye beklenip tekrar denenecek... (Deneme {attempt + 1}/{self.max_retries})")
+                    time.sleep(wait_time)
+                else:
+                    # Diğer hatalarda veya son denemede istisnayı yükselt
+                    logging.error(f"Sentos API Hatası ({url}): {e}")
+                    raise Exception(f"Sentos API Hatası ({url}): {e}")
+            except requests.exceptions.RequestException as e:
+                # Bağlantı ve diğer genel istek hatalarını yakala
+                logging.error(f"Sentos API Bağlantı Hatası ({url}): {e}")
+                raise Exception(f"Sentos API Bağlantı Hatası ({url}): {e}")
     
     def get_all_products(self, progress_callback=None, page_size=100):
         all_products, page = [], 1
@@ -69,6 +85,7 @@ class SentosAPI:
                 time.sleep(0.5)
             except Exception as e:
                 logging.error(f"Sayfa {page} çekilirken hata: {e}")
+                # Hata durumunda işlemi sonlandır. _make_request zaten tekrar denemeyi yönetiyor.
                 raise Exception(f"Sentos API'den ürünler çekilemedi: {e}")
             
         logging.info(f"Sentos'tan toplam {len(all_products)} ürün çekildi.")
@@ -93,7 +110,6 @@ class SentosAPI:
             logging.error(f"Sıralı resimler çekilirken hata oluştu (Ürün ID: {product_id}): {e}")
             return []
 
-    # --- YENİ EKLENEN FONKSİYON ---
     def get_product_by_sku(self, sku):
         """Verilen SKU'ya göre Sentos'tan tek bir ürün çeker."""
         if not sku:
