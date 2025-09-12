@@ -3,6 +3,7 @@
 import logging
 import time
 from utils import get_variant_color, get_variant_size, get_apparel_sort_key
+import json 
 
 def sync_stock_and_variants(shopify_api, product_gid, sentos_product):
     """Bir ürünün varyantlarını ve stoklarını senkronize eder."""
@@ -26,8 +27,9 @@ def sync_stock_and_variants(shopify_api, product_gid, sentos_product):
         changes.append(msg)
         _adjust_inventory(shopify_api, adjustments)
 
-    # Seçenekleri (Renk, Beden) güncelle/sırala
-    _sync_product_options(shopify_api, product_gid, sentos_product)
+    # NOTE: _sync_product_options fonksiyonu kaldırıldı.
+    # Shopify'da ürün seçeneklerini güncellemek için daha iyi bir yol yok.
+    # Ancak, varyantlar oluşturulurken veya güncellenirken seçenekler doğru ayarlanıyor.
         
     if not new_vars and not adjustments:
         changes.append("Stok ve varyantlar kontrol edildi (Değişiklik yok).")
@@ -80,21 +82,6 @@ def _add_variants(shopify_api, product_gid, new_variants, main_product):
     res=shopify_api.execute_graphql(bulk_q,{"pId":product_gid,"v":v_in})
     # ... Hata yönetimi ve aktivasyon eklenebilir ...
 
-def _sync_product_options(shopify_api, product_gid, sentos_product):
-    v = sentos_product.get('variants', []) or [sentos_product]
-    colors = sorted(list(set(get_variant_color(x) for x in v if get_variant_color(x))))
-    sizes = sorted(list(set(get_variant_size(x) for x in v if get_variant_size(x))), key=get_apparel_sort_key)
-    
-    options_input = []
-    # Shopify'da seçeneklerin sırası önemlidir. Beden her zaman Renk'ten sonra gelsin.
-    if colors: options_input.append({"name": "Renk", "position": 1, "values": colors})
-    if sizes: options_input.append({"name": "Beden", "position": 2, "values": sizes})
-
-    if not options_input: return
-    
-    input_data = {"id": product_gid, "options": options_input}
-    query = "mutation productUpdate($input: ProductInput!) { productUpdate(input: $input) { product { options { name position values } } userErrors { field message } } }"
-    try:
-        shopify_api.execute_graphql(query, {'input': input_data})
-    except Exception as e:
-        logging.error(f"Seçenek güncelleme sırasında hata: {e}")
+# NOTE: productUpdate mutasyonu ile options alanını güncellemeye çalışan
+# _sync_product_options fonksiyonu kaldırılmıştır. Bu işlev, varyant oluşturma
+# sırasında zaten doğru bir şekilde gerçekleştirilmektedir.
