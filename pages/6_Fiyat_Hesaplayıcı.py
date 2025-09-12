@@ -241,7 +241,6 @@ if st.session_state.calculated_df is not None:
                     price_col = 'NIHAI_SATIS_FIYATI'
                     compare_col = None
                 else: 
-                    # İndirimli fiyatlar seçildiğinde hem indirimli hem de ana fiyat gönderilir.
                     calculated_data_df = st.session_state.retail_df
                     price_col = 'İNDİRİMLİ SATIŞ FİYATI'
                     compare_col = 'NIHAI_SATIS_FIYATI'
@@ -256,10 +255,31 @@ if st.session_state.calculated_df is not None:
                 )
 
                 progress_bar.empty()
-                st.success(f"İşlem Tamamlandı! ✅ {results.get('success', 0)} varyant başarıyla güncellendi.")
+                if results.get('success', 0) > 0:
+                    st.success(f"İşlem Tamamlandı! ✅ {results.get('success', 0)} varyant başarıyla güncellendi.")
+                
                 if results.get('failed', 0) > 0:
                     st.error(f"❌ {results.get('failed', 0)} varyant güncellenirken hata oluştu.")
-                    with st.expander("Hata Detayları"): st.json(results.get('errors', []))
+                
+                if results.get('details'):
+                    st.markdown("### Güncelleme Raporu")
+                    report_df = pd.DataFrame(results['details'])
+                    
+                    st.markdown("#### Başarılı Olanlar")
+                    success_df = report_df[report_df['status'] == 'success']
+                    if not success_df.empty:
+                        st.dataframe(success_df[['variant_id', 'price']], use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Hiçbir varyant başarıyla güncellenemedi.")
+                    
+                    st.markdown("---")
+                    
+                    st.markdown("#### Başarısız Olanlar")
+                    failed_df = report_df[report_df['status'] == 'failed']
+                    if not failed_df.empty:
+                        st.dataframe(failed_df, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Hiçbir varyant güncellenirken hata oluşmadı.")
             except Exception as e:
                 st.error("Güncelleme sırasında beklenmedik bir hata oluştu:")
                 st.exception(e)
