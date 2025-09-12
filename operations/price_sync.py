@@ -9,7 +9,7 @@ import pandas as pd
 def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column_name, compare_price_column_name=None, progress_callback=None):
     """
     Hesaplanmış fiyatları (calculated_df) ve tüm varyant listesini (variants_df) alarak
-    Shopify'a toplu fiyat güncellemesi gönderir. Tüm hazırlık mantığı bu fonksiyondadır.
+    Shopify'a toplu fiyat güncellemesi gönderir. 
     """
     if progress_callback: 
         progress_callback({'progress': 5, 'message': 'Fiyatlar ve varyantlar birleştiriliyor...'})
@@ -30,7 +30,43 @@ def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column
         progress_callback({'progress': 15, 'message': 'Varyantlar Shopify ile eşleştiriliyor...'})
     
     skus_to_update = df_to_send['MODEL KODU'].dropna().astype(str).tolist()
-    variant_map = shopify_api.get_variant_ids_by_skus(skus_to_update)
+    
+    # Daha hızlı eşleştirme için batch işlem
+    variant_map = {}
+    for i in range(0, len(skus_to_update), 50):
+        batch = skus_to_update[i:i+50]
+        if progress_callback:
+            progress = 15 + int((i / len(skus_to_update)) * 10)
+            progress_callback({'progress': progress, 'message': f'SKU eşleştirme: {i}/{len(skus_to_update)}...'})
+        
+        try:
+            batch_map = shopify_api.get_variant_ids_by_skus(batch)
+            variant_map.update(batch_map)
+        except Exception as e:
+            logging.error(f"SKU batch {i//50 + 1} eşleştirilemedi: {e}")
+    
+    # Güncellenecek varyantları hazırla
+    updates = []
+    for _, row in df_to_send.iterrows():
+        sku = str(row['MODEL KODU'])
+        if sku in variant_map:
+            payload = {
+                "id": variant_map[sku], 
+                "price": f"{row[price_column_name]:.2f}", 
+                "sku": sku
+            }
+            if compare_price_column_name and row.get(compare_price_column_name) is not None:
+                payload["compareAtPrice"] = f"{row[compare_price_column_name]:.2f}"
+            updates.append(payload)
+    
+    if not updates:
+        logging.warning("Shopify'da eşleşen ve güncellenecek varyant bulunamadı.")
+        return {"success": 0, "failed": len(skus_to_update), "errors": ["Shopify'da eşleşen SKU bulunamadı."], "details": []}
+
+    logging.info(f"{len(updates)} adet varyant fiyat güncellemesi başlatılıyor.")
+    
+    # Doğrudan REST API kullan - daha basit ve güvenilir
+    return _update_prices_individually(shopify_api, updates, progress_callback)
 
     # Varyantları product'a göre grupla
     product_variants_map = {}
