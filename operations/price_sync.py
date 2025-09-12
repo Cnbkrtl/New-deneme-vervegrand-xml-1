@@ -52,7 +52,6 @@ def _update_variant_prices_in_bulk(shopify_api, price_updates: list, progress_ca
     total_updates = len(price_updates)
     
     try:
-        # 50'den az varyant için bireysel güncelleme daha hızlı olabilir
         if total_updates <= 50:
             logging.info(f"{total_updates} adet varyant için bireysel güncelleme başlatılıyor (toplu işlem yerine).")
             return _update_prices_individually(shopify_api, price_updates, progress_callback)
@@ -130,12 +129,10 @@ mutation {{
         else:
             error = f"Toplu işlem başarısız oldu. Durum: {bulk_op['status']}, Hata Kodu: {bulk_op.get('errorCode')}. Detaylar: {bulk_op.get('resultFileUrl')}"
             logging.error(error)
-            # Toplu işlem başarısız olursa bireysel güncelleme ile yedekle
             return _update_prices_individually(shopify_api, price_updates, progress_callback)
                 
     except Exception as e:
         logging.error(f"Toplu fiyat güncelleme sırasında kritik hata: {e}")
-        # Kritik bir hata olursa bireysel güncelleme ile yedekle
         return _update_prices_individually(shopify_api, price_updates, progress_callback)
 
 
@@ -151,19 +148,19 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
             progress_callback({'progress': progress, 'message': f'Tek tek güncelleniyor: {i+1}/{total}', 'log_detail': log_message})
         
         mutation = """
-        mutation productVariantUpdate($input: ProductVariantInput!) {
-          productVariantUpdate(input: $input) {
-            productVariant {
-              id
-              price
-              compareAtPrice
+            mutation productVariantUpdate($input: ProductVariantInput!) {
+              productVariantUpdate(input: $input) {
+                productVariant {
+                  id
+                  price
+                  compareAtPrice
+                }
+                userErrors {
+                  field
+                  message
+                }
+              }
             }
-            userErrors {
-              field
-              message
-            }
-          }
-        }
         """
         
         variant_input = {"id": update["variant_id"], "price": update["price"]}
