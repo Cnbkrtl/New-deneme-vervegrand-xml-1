@@ -8,6 +8,8 @@ import json
 from io import StringIO
 import sys
 import os
+import queue
+import threading
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from connectors.shopify_api import ShopifyAPI
@@ -86,6 +88,8 @@ st.session_state.setdefault('calculated_df', None)
 st.session_state.setdefault('df_for_display', None)
 st.session_state.setdefault('df_variants', None)
 st.session_state.setdefault('retail_df', None)
+st.session_state.setdefault('sync_progress_queue', queue.Queue())
+st.session_state.setdefault('sync_log_list', [])
 
 # --- ARAYÜZ (Bu bölümde değişiklik yok) ---
 st.markdown("""
@@ -149,6 +153,7 @@ else:
         st.session_state.calculated_df = None
         st.session_state.df_for_display = None
         st.session_state.df_variants = None
+        st.session_state.sync_log_list = []
         st.rerun()
 
 if st.session_state.df_for_display is not None:
@@ -230,9 +235,25 @@ if st.session_state.calculated_df is not None:
             if st.session_state.df_variants is None or st.session_state.df_variants.empty:
                 st.error("HATA: Hafızada varyant verisi bulunamadı. Lütfen önce Sentos'tan veri çekin.")
                 st.stop()
+            
+            st.session_state.sync_log_list = []
             progress_bar = st.progress(0, text="Güncelleme işlemi başlatılıyor...")
+            log_placeholder = st.empty()
+            
             def shopify_progress_callback(data):
-                progress_bar.progress(data.get('progress', 0) / 100.0, text=data.get('message', 'İşleniyor...'))
+                progress = data.get('progress', 0)
+                message = data.get('message', 'İşleniyor...')
+                log_detail = data.get('log_detail')
+                
+                if progress_bar:
+                    progress_bar.progress(progress / 100.0, text=message)
+                
+                if log_detail and log_placeholder:
+                    st.session_state.sync_log_list.insert(0, log_detail)
+                    # Sadece son 50 logu göster
+                    log_html = "".join(st.session_state.sync_log_list[:50])
+                    log_placeholder.markdown(f'<div style="height:200px;overflow-y:scroll;border:1px solid #333;padding:10px;border-radius:5px;font-family:monospace;">{log_html}</div>', unsafe_allow_html=True)
+            
             try:
                 shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
                 calculated_data_df, price_col, compare_col = pd.DataFrame(), None, None
@@ -255,6 +276,8 @@ if st.session_state.calculated_df is not None:
                 )
 
                 progress_bar.empty()
+                log_placeholder.empty()
+
                 if results.get('success', 0) > 0:
                     st.success(f"İşlem Tamamlandı! ✅ {results.get('success', 0)} varyant başarıyla güncellendi.")
                 
@@ -262,13 +285,14 @@ if st.session_state.calculated_df is not None:
                     st.error(f"❌ {results.get('failed', 0)} varyant güncellenirken hata oluştu.")
                 
                 if results.get('details'):
+                    st.markdown("---")
                     st.markdown("### Güncelleme Raporu")
                     report_df = pd.DataFrame(results['details'])
                     
                     st.markdown("#### Başarılı Olanlar")
                     success_df = report_df[report_df['status'] == 'success']
                     if not success_df.empty:
-                        st.dataframe(success_df[['variant_id', 'price']], use_container_width=True, hide_index=True)
+                        st.dataframe(success_df[['sku', 'price', 'variant_id']], use_container_width=True, hide_index=True)
                     else:
                         st.info("Hiçbir varyant başarıyla güncellenemedi.")
                     
@@ -277,7 +301,7 @@ if st.session_state.calculated_df is not None:
                     st.markdown("#### Başarısız Olanlar")
                     failed_df = report_df[report_df['status'] == 'failed']
                     if not failed_df.empty:
-                        st.dataframe(failed_df, use_container_width=True, hide_index=True)
+                        st.dataframe(failed_df[['sku', 'price', 'reason']], use_container_width=True, hide_index=True)
                     else:
                         st.info("Hiçbir varyant güncellenirken hata oluşmadı.")
             except Exception as e:

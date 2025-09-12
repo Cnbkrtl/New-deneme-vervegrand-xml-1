@@ -33,7 +33,7 @@ def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column
     for _, row in df_to_send.iterrows():
         sku = str(row['MODEL KODU'])
         if sku in variant_map:
-            payload = {"variant_id": variant_map[sku], "price": f"{row[price_column_name]:.2f}"}
+            payload = {"variant_id": variant_map[sku], "sku": sku, "price": f"{row[price_column_name]:.2f}"}
             if compare_price_column_name and row.get(compare_price_column_name) is not None:
                 payload["compare_at_price"] = f"{row[compare_price_column_name]:.2f}"
             updates.append(payload)
@@ -52,6 +52,7 @@ def _update_variant_prices_in_bulk(shopify_api, price_updates: list, progress_ca
     total_updates = len(price_updates)
     
     try:
+        # 50'den az varyant için bireysel güncelleme daha hızlı olabilir
         if total_updates <= 50:
             logging.info(f"{total_updates} adet varyant için bireysel güncelleme başlatılıyor (toplu işlem yerine).")
             return _update_prices_individually(shopify_api, price_updates, progress_callback)
@@ -144,9 +145,10 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
     details = []
     
     for i, update in enumerate(price_updates):
+        log_message = f"Varyant {i+1}/{total} ({update.get('sku')}): Fiyat {update['price']} olarak güncelleniyor..."
         if progress_callback:
             progress = int((i / total) * 100)
-            progress_callback({'progress': progress, 'message': f'Tek tek güncelleniyor: {i+1}/{total}'})
+            progress_callback({'progress': progress, 'message': f'Tek tek güncelleniyor: {i+1}/{total}', 'log_detail': log_message})
         
         mutation = """
         mutation productVariantUpdate($input: ProductVariantInput!) {
@@ -172,19 +174,25 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
             result = shopify_api.execute_graphql(mutation, {"input": variant_input})
             if user_errors := result.get("productVariantUpdate", {}).get("userErrors"):
                 failed_count += 1
-                error_messages = [f"{err['field']}: {err['message']}" for err in user_errors]
+                error_messages = [f"{err.get('field', 'Bilinmiyor')}: {err.get('message', 'Bilinmeyen hata')}" for err in user_errors]
                 errors.extend(error_messages)
-                details.append({"status": "failed", "variant_id": update["variant_id"], "price": update["price"], "reason": ", ".join(error_messages)})
-                logging.error(f"Varyant {update['variant_id']} için fiyat güncellenemedi: {user_errors}")
+                log_message = f"❌ HATA: Varyant {update.get('sku')} için fiyat güncellenemedi. Neden: {', '.join(error_messages)}"
+                details.append({"status": "failed", "variant_id": update["variant_id"], "sku": update.get("sku"), "price": update["price"], "reason": ", ".join(error_messages)})
+                if progress_callback: progress_callback({'log_detail': log_message})
+                logging.error(log_message)
             else:
                 success_count += 1
-                details.append({"status": "success", "variant_id": update["variant_id"], "price": update["price"], "reason": "Başarıyla güncellendi."})
-                logging.info(f"Varyant {update['variant_id']} için fiyat güncellendi.")
+                log_message = f"✅ BAŞARILI: Varyant {update.get('sku')} için fiyat başarıyla güncellendi."
+                details.append({"status": "success", "variant_id": update["variant_id"], "sku": update.get("sku"), "price": update["price"], "reason": "Başarıyla güncellendi."})
+                if progress_callback: progress_callback({'log_detail': log_message})
+                logging.info(log_message)
         except Exception as e:
             failed_count += 1
-            errors.append(str(e))
-            details.append({"status": "failed", "variant_id": update["variant_id"], "price": update["price"], "reason": str(e)})
-            logging.error(f"GraphQL sorgusu sırasında hata: {e}")
+            log_message = f"❌ KRİTİK HATA: Varyant {update.get('sku')} için GraphQL sorgusu başarısız oldu. Hata: {e}"
+            errors.append(log_message)
+            details.append({"status": "failed", "variant_id": update["variant_id"], "sku": update.get("sku"), "price": update["price"], "reason": str(e)})
+            if progress_callback: progress_callback({'log_detail': log_message})
+            logging.error(log_message)
     
     if progress_callback: progress_callback({'progress': 100, 'message': 'İşlem tamamlandı!'})
     return {"success": success_count, "failed": failed_count, "errors": errors, "details": details}
