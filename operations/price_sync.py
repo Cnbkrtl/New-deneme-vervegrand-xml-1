@@ -1,4 +1,4 @@
-# operations/price_sync.py (Hatalar Giderilmiş Sürüm)
+# operations/price_sync.py (Hatalar Giderilmiş ve Güncellenmiş Sürüm)
 
 import logging
 import json
@@ -50,7 +50,9 @@ def _update_variant_prices_in_bulk(shopify_api, price_updates: list, progress_ca
     total_updates = len(price_updates)
     
     try:
+        # 50'den az varyant için bireysel güncelleme daha hızlı olabilir
         if total_updates <= 50:
+            logging.info(f"{total_updates} adet varyant için bireysel güncelleme başlatılıyor (toplu işlem yerine).")
             return _update_prices_individually(shopify_api, price_updates, progress_callback)
 
         if progress_callback: progress_callback({'progress': 20, 'message': f'{total_updates} varyant için güncelleme dosyası hazırlanıyor...'})
@@ -85,7 +87,24 @@ def _update_variant_prices_in_bulk(shopify_api, price_updates: list, progress_ca
 
         if progress_callback: progress_callback({'progress': 55, 'message': 'Toplu güncelleme işlemi başlatılıyor...'})
         
-        bulk_mutation = f"""mutation {{ bulkOperationRunMutation( mutation: "mutation call($input: ProductVariantInput!) {{ productVariantUpdate(input: $input) {{ productVariant {{ id }} userErrors {{ field message }} }} }}", stagedUploadPath: "{target['resourceUrl']}" ) {{ bulkOperation {{ id status }} userErrors {{ field message }} }} }}"""
+        # NOTE: GraphQL mutasyonunda ProductVariantInput değişken tipi kullanılıyor.
+        bulk_mutation = f"""
+mutation {{
+    bulkOperationRunMutation(
+        mutation: "mutation($input: ProductVariantInput!) {{ productVariantUpdate(input: $input) {{ productVariant {{ id }} userErrors {{ field message }} }} }}", 
+        stagedUploadPath: "{target['resourceUrl']}"
+    ) {{
+        bulkOperation {{
+            id
+            status
+        }}
+        userErrors {{
+            field
+            message
+        }}
+    }}
+}}
+"""
         bulk_result = shopify_api.execute_graphql(bulk_mutation)
         bulk_op = bulk_result.get("bulkOperationRunMutation", {}).get("bulkOperation")
 
@@ -110,10 +129,12 @@ def _update_variant_prices_in_bulk(shopify_api, price_updates: list, progress_ca
         else:
             error = f"Toplu işlem başarısız oldu. Durum: {bulk_op['status']}, Hata Kodu: {bulk_op.get('errorCode')}. Detaylar: {bulk_op.get('resultFileUrl')}"
             logging.error(error)
-            return {"success": 0, "failed": total_updates, "errors": [error]}
+            # Toplu işlem başarısız olursa bireysel güncelleme ile yedekle
+            return _update_prices_individually(shopify_api, price_updates, progress_callback)
                 
     except Exception as e:
         logging.error(f"Toplu fiyat güncelleme sırasında kritik hata: {e}")
+        # Kritik bir hata olursa bireysel güncelleme ile yedekle
         return _update_prices_individually(shopify_api, price_updates, progress_callback)
 
 
@@ -126,8 +147,7 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
             progress = int((i / total) * 100)
             progress_callback({'progress': progress, 'message': f'Tek tek güncelleniyor: {i+1}/{total}'})
         
-        # --- DÜZELTME BURADA ---
-        # GraphQL sorgu formatı düzeltildi.
+        # --- GraphQL sorgu formatı düzeltildi. ---
         mutation = """
         mutation productVariantUpdate($input: ProductVariantInput!) {
           productVariantUpdate(input: $input) {
@@ -146,17 +166,19 @@ def _update_prices_individually(shopify_api, price_updates: list, progress_callb
         
         variant_input = {"id": update["variant_id"], "price": update["price"]}
         if "compare_at_price" in update and update["compare_at_price"] is not None:
+            # None kontrolü eklendi, böylece compareAtPrice sadece değer varsa gönderilir.
             variant_input["compareAtPrice"] = update["compare_at_price"]
         
         try:
             result = shopify_api.execute_graphql(mutation, {"input": variant_input})
             if result.get("productVariantUpdate", {}).get("userErrors"):
                 failed_count += 1
-                errors.extend(result["productVariantUpdate"]["userErrors"])
-                logging.error(f"SKU {update.get('sku')} için fiyat güncellenemedi: {result['productVariantUpdate']['userErrors']}")
+                error_details = result["productVariantUpdate"]["userErrors"]
+                errors.extend(error_details)
+                logging.error(f"Varyant {update.get('variant_id')} için fiyat güncellenemedi: {error_details}")
             else:
                 success_count += 1
-                logging.info(f"SKU {update.get('sku')} için fiyat güncellendi.")
+                logging.info(f"Varyant {update.get('variant_id')} için fiyat güncellendi.")
         except Exception as e:
             failed_count += 1
             errors.append(str(e))

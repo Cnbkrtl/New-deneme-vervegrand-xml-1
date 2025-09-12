@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (Import Hatası Düzeltilmiş Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py (Son Hatalar Giderilmiş Sürüm)
 
 import streamlit as st
 import pandas as pd
@@ -12,8 +12,8 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from connectors.shopify_api import ShopifyAPI
 from connectors.sentos_api import SentosAPI
-# DÜZELTME: Doğru fonksiyon adı import edildi.
 from operations.price_sync import send_prices_to_shopify
+from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to_gsheets
 
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():
@@ -85,6 +85,7 @@ def apply_rounding(price, method):
 st.session_state.setdefault('calculated_df', None)
 st.session_state.setdefault('df_for_display', None)
 st.session_state.setdefault('df_variants', None)
+st.session_state.setdefault('retail_df', None)
 
 # --- ARAYÜZ (Bu bölümde değişiklik yok) ---
 st.markdown("""
@@ -127,7 +128,7 @@ if st.session_state.df_for_display is None:
     with col2:
         if st.button("📄 Kayıtlı Veriyi G-Sheets'ten Yükle", use_container_width=True):
             with st.spinner("Google E-Tablolardan veriler yükleniyor..."):
-                loaded_df = None # Placeholder
+                loaded_df = load_pricing_data_from_gsheets()
             if loaded_df is not None and not loaded_df.empty:
                 st.session_state.calculated_df = loaded_df
                 st.session_state.df_for_display = loaded_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']]
@@ -190,6 +191,7 @@ if st.session_state.calculated_df is not None:
         revenue_after_discount = retail_df['İNDİRİMLİ SATIŞ FİYATI'] / (1 + vat_rate / 100)
         retail_df['İNDİRİM SONRASI KÂR'] = revenue_after_discount - retail_df['ALIŞ FİYATI']
         retail_df['İNDİRİM SONRASI KÂR ORANI (%)'] = np.divide(retail_df['İNDİRİM SONRASI KÂR'], retail_df['ALIŞ FİYATI'], out=np.zeros_like(retail_df['İNDİRİM SONRASI KÂR']), where=retail_df['ALIŞ FİYATI']!=0) * 100
+        st.session_state.retail_df = retail_df # Retail DF'i session state'e kaydet
         discount_df_display = retail_df[['MODEL KODU', 'ÜRÜN ADI', 'NIHAI_SATIS_FIYATI', 'İNDİRİM ORANI (%)', 'İNDİRİMLİ SATIŞ FİYATI', 'İNDİRİM SONRASI KÂR', 'İNDİRİM SONRASI KÂR ORANI (%)']]
         st.dataframe(discount_df_display.style.format({
             'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', 'İNDİRİM ORANI (%)': '{:.0f}%', 'İNDİRİMLİ SATIŞ FİYATI': '{:,.2f} ₺',
@@ -216,7 +218,10 @@ if st.session_state.calculated_df is not None:
     with col1:
         if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True):
             with st.spinner("Veriler Google E-Tablolar'a kaydediliyor..."):
-                success, url = False, "" # Placeholder
+                main_df = st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', 'NIHAI_SATIS_FIYATI']]
+                discount_df = st.session_state.retail_df[['MODEL KODU', 'ÜRÜN ADI', 'İNDİRİMLİ SATIŞ FİYATI']]
+                wholesale_df = wholesale_df[['MODEL KODU', 'ÜRÜN ADI', "TOPTAN FİYAT (KDV'li)"]]
+                success, url = save_pricing_data_to_gsheets(main_df, discount_df, wholesale_df)
             if success: st.success(f"Veriler başarıyla kaydedildi! [E-Tabloyu Görüntüle]({url})")
     
     with col2:
@@ -236,11 +241,11 @@ if st.session_state.calculated_df is not None:
                     price_col = 'NIHAI_SATIS_FIYATI'
                     compare_col = None
                 else: 
-                    calculated_data_df = retail_df
+                    # İndirimli fiyatlar seçildiğinde hem indirimli hem de ana fiyat gönderilir.
+                    calculated_data_df = st.session_state.retail_df
                     price_col = 'İNDİRİMLİ SATIŞ FİYATI'
                     compare_col = 'NIHAI_SATIS_FIYATI'
                 
-                # DÜZELTME: Doğru fonksiyon adı çağrıldı.
                 results = send_prices_to_shopify(
                     shopify_api=shopify_api,
                     calculated_df=calculated_data_df,
