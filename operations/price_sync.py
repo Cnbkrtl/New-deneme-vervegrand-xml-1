@@ -37,6 +37,8 @@ def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column
             if compare_price_column_name and row.get(compare_price_column_name) is not None:
                 payload["compare_at_price"] = f"{row[compare_price_column_name]:.2f}"
             updates.append(payload)
+        else:
+            logging.warning(f"SKU {sku} için Shopify'da eşleşen varyant bulunamadı. Fiyat güncellemesi atlandı.")
     
     if not updates:
         logging.warning("Shopify'da eşleşen ve güncellenecek varyant bulunamadı.")
