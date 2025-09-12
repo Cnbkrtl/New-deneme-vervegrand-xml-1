@@ -1,4 +1,4 @@
-# operations/price_sync.py (Tamamen Yeniden Yazılmış Sürüm)
+# operations/price_sync.py (Tamamen Yeniden Yazılmış ve Geliştirilmiş Sürüm)
 
 import logging
 import json
@@ -139,3 +139,156 @@ mutation {{
     except Exception as e:
         logging.error(f"Toplu fiyat güncelleme sırasında kritik hata: {e}")
         return {"success": 0, "failed": total_updates, "errors": [str(e)], "details": [{"status": "failed", "reason": str(e)}]}
+
+def _update_prices_individually(shopify_api, price_updates: list, progress_callback=None):
+    """Fiyatları tek tek GraphQL mutations ile günceller (fallback metodu)."""
+    success_count, failed_count, errors, total = 0, 0, [], len(price_updates)
+    details = []
+    
+    for i, update in enumerate(price_updates):
+        log_message = f"Varyant {i+1}/{total} ({update.get('sku')}): Fiyat {update['price']} olarak güncelleniyor..."
+        if progress_callback:
+            progress = int((i / total) * 100)
+            progress_callback({'progress': progress, 'message': f'Tek tek güncelleniyor: {i+1}/{total}', 'log_detail': log_message})
+        
+        # DÜZELTİLMİŞ: productVariantsBulkUpdate kullanarak tek varyant güncelleme
+        # productVariantUpdate deprecated olduğu için bulk mutation'ı tek varyant için kullanıyoruz
+        
+        # Önce varyant ID'sinden Product ID'yi çıkaralım
+        variant_gid = update["id"]
+        
+        # Product ID'yi bulmak için önce varyant sorgulayalım
+        query = """
+        query getProductIdFromVariant($id: ID!) {
+            productVariant(id: $id) {
+                product {
+                    id
+                }
+            }
+        }
+        """
+        
+        try:
+            # Product ID'yi al
+            result = shopify_api.execute_graphql(query, {"id": variant_gid})
+            product_id = result.get("productVariant", {}).get("product", {}).get("id")
+            
+            if not product_id:
+                raise Exception(f"Varyant {variant_gid} için product ID bulunamadı")
+            
+            # Şimdi productVariantsBulkUpdate mutation'ını kullan
+            mutation = """
+            mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+                productVariantsBulkUpdate(productId: $productId, variants: $variants) {
+                    productVariants {
+                        id
+                        price
+                        compareAtPrice
+                    }
+                    userErrors {
+                        field
+                        message
+                    }
+                }
+            }
+            """
+            
+            # Varyant verilerini hazırla
+            variant_input = {
+                "id": variant_gid,
+                "price": update["price"]
+            }
+            
+            if "compareAtPrice" in update and update["compareAtPrice"] is not None:
+                variant_input["compareAtPrice"] = update["compareAtPrice"]
+            
+            # Mutation'ı çalıştır
+            result = shopify_api.execute_graphql(mutation, {
+                "productId": product_id,
+                "variants": [variant_input] # Tek varyant bile olsa array içinde
+            })
+            
+            if user_errors := result.get("productVariantsBulkUpdate", {}).get("userErrors"):
+                failed_count += 1
+                error_messages = [f"{err.get('field', 'Bilinmiyor')}: {err.get('message', 'Bilinmeyen hata')}" for err in user_errors]
+                errors.extend(error_messages)
+                log_message = f"❌ HATA: Varyant {update.get('sku')} için fiyat güncellenemedi. Neden: {', '.join(error_messages)}"
+                details.append({
+                    "status": "failed",
+                    "variant_id": update["id"],
+                    "sku": update.get("sku"),
+                    "price": update["price"],
+                    "reason": ", ".join(error_messages)
+                })
+                if progress_callback:
+                    progress_callback({'log_detail': log_message})
+                logging.error(log_message)
+            else:
+                success_count += 1
+                log_message = f"✅ BAŞARILI: Varyant {update.get('sku')} için fiyat başarıyla güncellendi."
+                details.append({
+                    "status": "success",
+                    "variant_id": update["id"],
+                    "sku": update.get("sku"),
+                    "price": update["price"],
+                    "reason": "Başarıyla güncellendi."
+                })
+                if progress_callback:
+                    progress_callback({'log_detail': log_message})
+                logging.info(log_message)
+                
+        except Exception as e:
+            # Alternatif olarak REST API'yi dene
+            try:
+                # Numeric ID'yi al (gid://shopify/ProductVariant/12345 -> 12345)
+                variant_id_numeric = variant_gid.split("/")[-1]
+                endpoint = f"variants/{variant_id_numeric}.json"
+                
+                variant_data = {
+                    "variant": {
+                        "id": variant_id_numeric,
+                        "price": update["price"]
+                    }
+                }
+                
+                if "compareAtPrice" in update and update["compareAtPrice"] is not None:
+                    variant_data["variant"]["compare_at_price"] = update["compareAtPrice"]
+                
+                # REST API çağrısı
+                response = shopify_api._make_request("PUT", endpoint, data=variant_data)
+                
+                if response and "variant" in response:
+                    success_count += 1
+                    log_message = f"✅ BAŞARILI: Varyant {update.get('sku')} için fiyat başarıyla güncellendi (REST API)."
+                    details.append({
+                        "status": "success",
+                        "variant_id": update["id"],
+                        "sku": update.get("sku"),
+                        "price": update["price"],
+                        "reason": "Başarıyla güncellendi (REST)."
+                    })
+                    if progress_callback:
+                        progress_callback({'log_detail': log_message})
+                    logging.info(log_message)
+                else:
+                    raise Exception("REST API yanıt vermedi")
+                    
+            except Exception as rest_error:
+                failed_count += 1
+                log_message = f"❌ KRİTİK HATA: Varyant {update.get('sku')} güncellenemedi. GraphQL Hatası: {e}, REST Hatası: {rest_error}"
+                errors.append(log_message)
+                details.append({
+                    "status": "failed",
+                    "variant_id": update["id"],
+                    "sku": update.get("sku"),
+                    "price": update["price"],
+                    "reason": f"GraphQL: {str(e)}, REST: {str(rest_error)}"
+                })
+                if progress_callback:
+                    progress_callback({'log_detail': log_message})
+                logging.error(log_message)
+    
+    if progress_callback:
+        progress_callback({'progress': 100, 'message': 'İşlem tamamlandı!'})
+    
+    return {"success": success_count, "failed": failed_count, "errors": errors, "details": details}
