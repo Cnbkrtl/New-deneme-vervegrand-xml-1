@@ -1,102 +1,108 @@
 # gsheets_manager.py
 
-import streamlit as st
 import gspread
+from gspread_dataframe import set_with_dataframe, get_dataframe
+from oauth2client.service_account import ServiceAccountCredentials
+import streamlit as st
 import pandas as pd
-import json
-from gspread_dataframe import set_with_dataframe
-from google.oauth2.service_account import Credentials
+import logging
+import time
 
-# --- Sabitler ---
-SPREADSHEET_NAME = "Vervegrand Fiyat Yönetim"
-SHEET_NAMES = {
-    "main": "Ana Fiyat",
-    "discount": "İndirimli Fiyat",
-    "wholesale": "Toptan Fiyat"
-}
+# Loglama konfigürasyonu
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- Bağlantı Fonksiyonu ---
+# Google Sheets'e bağlan
 @st.cache_resource(ttl=3600)
-def get_gsheet_client():
-    """Google Service Account kullanarak gspread istemcisini başlatır ve önbelleğe alır."""
-    creds_json_str = st.secrets.get("GCP_SERVICE_ACCOUNT_JSON")
-    if not creds_json_str:
-        raise ValueError("Google Service Account anahtarı Streamlit Secrets'ta bulunamadı.")
-    
-    creds_dict = json.loads(creds_json_str)
-    scopes = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
-    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    client = gspread.authorize(creds)
-    return client
-
-# --- Veri Kaydetme Fonksiyonu ---
-def save_pricing_data_to_gsheets(main_df, discount_df, wholesale_df):
-    """Üç fiyat DataFrame'ini Google E-Tablosundaki ilgili sayfalara kaydeder."""
+def get_gsheets_client():
     try:
-        client = get_gsheet_client()
-        
-        # E-Tabloyu aç veya oluştur
-        try:
-            spreadsheet = client.open(SPREADSHEET_NAME)
-        except gspread.exceptions.SpreadsheetNotFound:
-            st.info(f"'{SPREADSHEET_NAME}' bulunamadı, yeni bir e-tablo oluşturuluyor...")
-            spreadsheet = client.create(SPREADSHEET_NAME)
-            # Servis hesabını yetkilendir
-            creds_dict = json.loads(st.secrets["GCP_SERVICE_ACCOUNT_JSON"])
-            spreadsheet.share(creds_dict['client_email'], perm_type='user', role='writer')
+        if "gspread_creds" not in st.session_state:
+            # Streamlit secrets'tan veya başka bir yerden credential'ları al
+            creds_json = st.secrets["gcp_service_account"]
+            st.session_state.gspread_creds = creds_json
 
-        data_map = {
-            SHEET_NAMES["main"]: main_df,
-            SHEET_NAMES["discount"]: discount_df,
-            SHEET_NAMES["wholesale"]: wholesale_df
-        }
-
-        for sheet_name, df in data_map.items():
-            try:
-                worksheet = spreadsheet.worksheet(sheet_name)
-                st.info(f"'{sheet_name}' sayfası güncelleniyor...")
-            except gspread.exceptions.WorksheetNotFound:
-                st.info(f"'{sheet_name}' sayfası bulunamadı, yeni sayfa oluşturuluyor...")
-                worksheet = spreadsheet.add_worksheet(title=sheet_name, rows="1000", cols="50")
-            
-            worksheet.clear()
-            # DataFrame'i yazarken NaN değerlerini boş string ile değiştir
-            set_with_dataframe(worksheet, df.fillna(""), allow_formulas=False, resize=True)
-            
-        return True, spreadsheet.url
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(st.session_state.gspread_creds, scopes=['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive'])
+        client = gspread.authorize(creds)
+        logging.info("Google Sheets bağlantısı başarılı.")
+        return client
     except Exception as e:
-        st.error(f"Google E-Tablolar'a veri kaydedilirken hata oluştu: {e}")
+        logging.error(f"Google Sheets bağlantı hatası: {e}")
+        st.error("Google Sheets'e bağlanılamadı. Lütfen kimlik bilgilerini kontrol edin.")
+        return None
+
+def save_pricing_data_to_gsheets(main_df, discount_df, wholesale_df, variants_df):
+    """Fiyat verilerini (ana, indirimli, toptan) ve varyant verilerini Google E-Tablolar'a kaydeder."""
+    try:
+        client = get_gsheets_client()
+        if not client:
+            return False, None
+        
+        spreadsheet_name = f"Vervegrand_Fiyatlandirma_{time.strftime('%Y%m%d_%H%M%S')}"
+        sh = client.create(spreadsheet_name)
+        
+        # Paylaşım izni ver
+        sh.share(st.secrets["gcp_service_account"]["client_email"], perm_type='user', role='writer')
+        
+        # 1. Ana Fiyatları Kaydet
+        sh.add_worksheet(title="Ana Fiyatlar", rows=main_df.shape[0], cols=main_df.shape[1])
+        ws_main = sh.worksheet("Ana Fiyatlar")
+        set_with_dataframe(ws_main, main_df)
+        
+        # 2. İndirimli Fiyatları Kaydet
+        ws_discount = sh.add_worksheet(title="İndirimli Fiyatlar", rows=discount_df.shape[0], cols=discount_df.shape[1])
+        set_with_dataframe(ws_discount, discount_df)
+        
+        # 3. Toptan Fiyatları Kaydet
+        ws_wholesale = sh.add_worksheet(title="Toptan Fiyatlar", rows=wholesale_df.shape[0], cols=wholesale_df.shape[1])
+        set_with_dataframe(ws_wholesale, wholesale_df)
+
+        # 4. Varyant Verilerini Kaydet
+        ws_variants = sh.add_worksheet(title="Varyantlar", rows=variants_df.shape[0], cols=variants_df.shape[1])
+        set_with_dataframe(ws_variants, variants_df)
+        
+        logging.info(f"Fiyat verileri Google E-Tablolar'a kaydedildi: {sh.url}")
+        return True, sh.url
+        
+    except Exception as e:
+        logging.error(f"Fiyat verileri Google E-Tablolar'a kaydedilemedi: {e}")
+        st.error(f"Kaydetme hatası: {e}")
         return False, None
 
-# --- Veri Yükleme Fonksiyonu ---
 def load_pricing_data_from_gsheets():
-    """Google E-Tablosundan 'Ana Fiyat' sayfasını okur ve DataFrame olarak döndürür."""
+    """Son oluşturulan Google E-Tablosunu bulur ve fiyat verilerini yükler."""
     try:
-        client = get_gsheet_client()
-        spreadsheet = client.open(SPREADSHEET_NAME)
-        worksheet = spreadsheet.worksheet(SHEET_NAMES["main"])
-        
-        st.info(f"'{SPREADSHEET_NAME}' e-tablosundan veriler okunuyor...")
-        data = worksheet.get_all_records()
-        if not data:
-            return None
+        client = get_gsheets_client()
+        if not client:
+            return None, None
             
-        df = pd.DataFrame(data)
+        # En son oluşturulan dosyayı bul
+        list_of_spreadsheets = client.openall()
+        # "Vervegrand_Fiyatlandirma" ile başlayanları filtrele ve en sonuncuyu bul
+        spreadsheets = [s for s in list_of_spreadsheets if s.title.startswith('Vervegrand_Fiyatlandirma')]
+        if not spreadsheets:
+            st.warning("Hiç 'Vervegrand_Fiyatlandirma' dosyası bulunamadı.")
+            return None, None
+            
+        # En son oluşturulan tabloyu bul
+        latest_spreadsheet = sorted(spreadsheets, key=lambda s: s.updated, reverse=True)[0]
         
-        # Sayısal olması gereken sütunları sayısal yap
-        numeric_cols = ['ALIŞ FİYATI', 'SATIS_FIYATI_KDVSIZ', 'NIHAI_SATIS_FIYATI', 'KÂR', 'KÂR ORANI (%)']
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors='coerce')
+        # Ana Fiyatlar ve Varyantlar sayfalarını çek
+        ws_main = latest_spreadsheet.worksheet("Ana Fiyatlar")
+        ws_variants = latest_spreadsheet.worksheet("Varyantlar")
         
-        return df
+        main_df = get_dataframe(ws_main)
+        variants_df = get_dataframe(ws_variants)
+
+        # Boş satırları ve sütunları temizle
+        main_df.dropna(how='all', axis=0, inplace=True)
+        main_df.dropna(how='all', axis=1, inplace=True)
         
-    except gspread.exceptions.SpreadsheetNotFound:
-        st.warning(f"'{SPREADSHEET_NAME}' adında bir Google E-Tablosu bulunamadı.")
-        return None
-    except gspread.exceptions.WorksheetNotFound:
-        st.warning(f"E-tabloda '{SHEET_NAMES['main']}' adında bir sayfa bulunamadı.")
-        return None
+        variants_df.dropna(how='all', axis=0, inplace=True)
+        variants_df.dropna(how='all', axis=1, inplace=True)
+        
+        logging.info(f"Veriler '{latest_spreadsheet.title}' dosyasından yüklendi.")
+        return main_df, variants_df
+
     except Exception as e:
-        st.error(f"Google E-Tablolardan veri okunurken bir hata oluştu: {e}")
-        return None
+        logging.error(f"Google E-Tablolar'dan veri yüklenirken hata oluştu: {e}")
+        st.error(f"Veri yükleme hatası: {e}")
+        return None, None

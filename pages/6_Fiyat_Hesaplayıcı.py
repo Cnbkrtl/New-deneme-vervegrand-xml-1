@@ -134,11 +134,11 @@ if st.session_state.df_for_display is None:
     with col2:
         if st.button("📄 Kayıtlı Veriyi G-Sheets'ten Yükle", use_container_width=True):
             with st.spinner("Google E-Tablolardan veriler yükleniyor..."):
-                loaded_df = load_pricing_data_from_gsheets()
-            if loaded_df is not None and not loaded_df.empty:
-                st.session_state.calculated_df = loaded_df
-                st.session_state.df_for_display = loaded_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']]
-                st.session_state.df_variants = None
+                main_df, variants_df = load_pricing_data_from_gsheets()
+            if main_df is not None and not main_df.empty:
+                st.session_state.calculated_df = main_df
+                st.session_state.df_for_display = main_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']]
+                st.session_state.df_variants = variants_df
                 st.toast("Veriler Google E-Tablolar'dan yüklendi.")
                 st.rerun()
             else:
@@ -226,11 +226,14 @@ if st.session_state.calculated_df is not None:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True):
+            if st.session_state.df_variants is None or st.session_state.df_variants.empty:
+                st.error("HATA: Hafızada varyant verisi bulunamadı. Lütfen önce Sentos'tan veri çekin.")
+                st.stop()
             with st.spinner("Veriler Google E-Tablolar'a kaydediliyor..."):
                 main_df = st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', 'NIHAI_SATIS_FIYATI']]
                 discount_df = st.session_state.retail_df[['MODEL KODU', 'ÜRÜN ADI', 'İNDİRİMLİ SATIŞ FİYATI']]
                 wholesale_df = wholesale_df[['MODEL KODU', 'ÜRÜN ADI', "TOPTAN FİYAT (KDV'li)"]]
-                success, url = save_pricing_data_to_gsheets(main_df, discount_df, wholesale_df)
+                success, url = save_pricing_data_to_gsheets(main_df, discount_df, wholesale_df, st.session_state.df_variants)
             if success: 
                 st.success(f"Veriler başarıyla kaydedildi! [E-Tabloyu Görüntüle]({url})")
     
@@ -311,6 +314,15 @@ if st.session_state.calculated_df is not None:
             with log_container:
                 log_placeholder = st.empty()
             
+            # Streamlit'in zaman aşımına uğramasını engellemek için arka plan görevi
+            def keep_alive_task():
+                while st.session_state.get("update_in_progress"):
+                    time.sleep(15)
+                    st.empty() # Streamlit'in UI'ını yenilemesini tetikle
+            
+            keep_alive_thread = threading.Thread(target=keep_alive_task, daemon=True)
+            keep_alive_thread.start()
+
             def shopify_progress_callback(data):
                 progress = data.get('progress', 0)
                 message = data.get('message', 'İşleniyor...')
@@ -449,10 +461,9 @@ if st.session_state.calculated_df is not None:
                     
                     # Batch arası işlemler
                     if batch_num < total_batches:
-                        # Session'ı canlı tut
-                        if batch_num % 3 == 0:
-                            st.empty()  # UI yenileme
-                            time.sleep(0.5)
+                        # Streamlit'in UI'ını yenilemesi için küçük bir bekleme ve boş bir element
+                        time.sleep(0.5) 
+                        st.empty()
                         
                         # Rate limit için bekleme
                         wait_time = 2 if total_variants > 5000 else 1
@@ -554,3 +565,4 @@ if st.session_state.calculated_df is not None:
                     progress_bar.empty()
                 if 'batch_progress' in locals():
                     batch_progress.empty()
+                st.session_state.update_in_progress = False
