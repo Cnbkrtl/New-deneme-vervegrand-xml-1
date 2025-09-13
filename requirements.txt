@@ -1,5 +1,3 @@
-# requirements.txt
-
 streamlit
 requests
 pandas
@@ -9,8 +7,8 @@ PyYAML
 bcrypt
 openpyxl
 XlsxWriter
-gspread
-gspread-dataframe
+gspread==5.12.0
+gspread-dataframe==3.3.0
 oauth2client
 google-auth
 google-auth-oauthlib
