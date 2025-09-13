@@ -12,6 +12,7 @@ import queue
 import threading
 import time
 import logging
+import traceback
 
 # Doğrudan içe aktarma için dosya yolunu ekle
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -96,6 +97,83 @@ st.session_state.setdefault('df_variants', None)
 st.session_state.setdefault('retail_df', None)
 st.session_state.setdefault('sync_progress_queue', queue.Queue())
 st.session_state.setdefault('sync_log_list', [])
+st.session_state.setdefault('update_in_progress', False)
+st.session_state.setdefault('sync_results', None)
+st.session_state.setdefault('last_failed_skus', [])
+st.session_state.setdefault('last_update_results', None)
+
+
+# --- Shopify Güncelleme İşlemi ---
+def _run_price_sync(update_choice, continue_from_last, worker_count, batch_size, retry_count, queue):
+    """Fiyat senkronizasyonunu arka planda çalıştıran fonksiyon."""
+    try:
+        shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
+        
+        # Hangi fiyatları güncelleyeceğimizi belirle
+        if update_choice == "Ana Fiyatlar":
+            calculated_data_df = st.session_state.calculated_df
+            price_col = 'NIHAI_SATIS_FIYATI'
+            compare_col = None
+        else:
+            calculated_data_df = st.session_state.retail_df
+            price_col = 'İNDİRİMLİ SATIŞ FİYATI'
+            compare_col = 'NIHAI_SATIS_FIYATI'
+        
+        # Devam et modunda sadece başarısız olanları güncelle
+        variants_to_update = st.session_state.df_variants.copy()
+        if continue_from_last and st.session_state.last_failed_skus:
+            failed_skus = st.session_state.last_failed_skus
+            variants_to_update = variants_to_update[variants_to_update['MODEL KODU'].isin(failed_skus)]
+        
+        # Batch işleme - İyileştirilmiş
+        total_variants = len(variants_to_update)
+        all_results = {"success": 0, "failed": 0, "errors": [], "details": []}
+        
+        actual_batch_size = min(batch_size, 1000) if total_variants > 5000 else batch_size
+        actual_worker_count = min(worker_count, 7) if total_variants > 5000 else worker_count
+        total_batches = (total_variants + actual_batch_size - 1) // actual_batch_size
+        
+        for batch_num, batch_start in enumerate(range(0, total_variants, actual_batch_size), 1):
+            batch_end = min(batch_start + actual_batch_size, total_variants)
+            batch_variants = variants_to_update.iloc[batch_start:batch_end]
+            
+            # Batch progress callback wrapper
+            def batch_progress_callback(data):
+                queue.put(data)
+            
+            try:
+                results = send_prices_to_shopify(
+                    shopify_api=shopify_api,
+                    calculated_df=calculated_data_df,
+                    variants_df=batch_variants,
+                    price_column_name=price_col,
+                    compare_price_column_name=compare_col,
+                    progress_callback=batch_progress_callback,
+                    worker_count=actual_worker_count,
+                    max_retries=retry_count
+                )
+                
+                all_results["success"] += results.get("success", 0)
+                all_results["failed"] += results.get("failed", 0)
+                all_results["errors"].extend(results.get("errors", []))
+                all_results["details"].extend(results.get("details", []))
+                
+                queue.put({"batch_info": f"📦 Batch {batch_num}/{total_batches} tamamlandı."})
+                
+            except Exception as batch_error:
+                error_message = f"Batch {batch_num} hatası: {str(batch_error)[:200]}"
+                queue.put({"log_detail": f"<div style='color:#f48a94;'>❌ Kritik Hata: {error_message}</div>"})
+                logging.error(error_message + "\n" + traceback.format_exc())
+                all_results["errors"].append(error_message)
+                
+        # Sonuçları Streamlit'in ana akışına gönder
+        queue.put({"status": "done", "results": all_results})
+
+    except Exception as e:
+        queue.put({"status": "error", "message": str(e)})
+        logging.critical("Senkronizasyon görevi kritik bir hata ile sonlandı: " + str(e) + "\n" + traceback.format_exc())
+    finally:
+        st.session_state.update_in_progress = False
 
 # --- ARAYÜZ ---
 st.markdown("""
@@ -110,7 +188,7 @@ st.subheader("Adım 1: Ürün Verilerini Yükle")
 if st.session_state.df_for_display is None:
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🔄 Sentos'tan Yeni Fiyat Listesi Çek", use_container_width=True):
+        if st.button("🔄 Sentos'tan Yeni Fiyat Listesi Çek", use_container_width=True, disabled=st.session_state.update_in_progress):
             progress_bar = st.progress(0, text="Sentos API'ye bağlanılıyor...")
             def progress_callback(update):
                 progress = update.get('progress', 0)
@@ -136,7 +214,7 @@ if st.session_state.df_for_display is None:
                 st.error(f"API hatası: {e}")
     
     with col2:
-        if st.button("📄 Kayıtlı Veriyi G-Sheets'ten Yükle", use_container_width=True):
+        if st.button("📄 Kayıtlı Veriyi G-Sheets'ten Yükle", use_container_width=True, disabled=st.session_state.update_in_progress):
             with st.spinner("Google E-Tablolardan veriler yükleniyor..."):
                 main_df, variants_df = load_pricing_data_from_gsheets()
             if main_df is not None and not main_df.empty:
@@ -155,14 +233,14 @@ else:
     if variants_count > 0:
         message += f" | 📦 **{variants_count} varyant verisi** Shopify'a gönderim için hazır."
     st.success(message)
-    if st.button("🧹 Verileri Temizle ve Baştan Başla", use_container_width=True):
+    if st.button("🧹 Verileri Temizle ve Baştan Başla", use_container_width=True, disabled=st.session_state.update_in_progress):
         st.session_state.calculated_df = None
         st.session_state.df_for_display = None
         st.session_state.df_variants = None
         st.session_state.sync_log_list = []
         st.rerun()
 
-if st.session_state.df_for_display is not None:
+if st.session_state.df_for_display is not None and not st.session_state.update_in_progress:
     st.markdown("---"); st.subheader("Adım 2: Fiyatlandırma Kurallarını Uygula")
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
@@ -229,7 +307,7 @@ if st.session_state.calculated_df is not None:
     
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True):
+        if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True, disabled=st.session_state.update_in_progress):
             if st.session_state.df_variants is None or st.session_state.df_variants.empty:
                 st.error("HATA: Hafızada varyant verisi bulunamadı. Lütfen önce Sentos'tan veri çekin.")
                 st.stop()
@@ -282,7 +360,7 @@ if st.session_state.calculated_df is not None:
         update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
         
         # Devam et modunda önceki sonuçları göster
-        if continue_from_last and 'last_update_results' in st.session_state:
+        if continue_from_last and 'last_update_results' in st.session_state and not st.session_state.update_in_progress:
             last_results = st.session_state.last_update_results
             st.info(f"""
             📊 Önceki güncelleme sonucu:
@@ -291,282 +369,146 @@ if st.session_state.calculated_df is not None:
             - 🔄 Tekrar denenecek: {last_results.get('failed', 0)} varyant
             """)
         
-        if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary"):
+        if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary", disabled=st.session_state.update_in_progress):
             if st.session_state.df_variants is None or st.session_state.df_variants.empty:
                 st.error("HATA: Hafızada varyant verisi bulunamadı. Lütfen önce Sentos'tan veri çekin.")
                 st.stop()
             
-            # Session state'e güncelleme durumunu kaydet
+            # Güncelleme işlemini başlat ve bayrağı ayarla
             st.session_state.update_in_progress = True
             st.session_state.sync_log_list = []
+            st.session_state.sync_results = None
             
-            # Ana konteynerler
-            status_container = st.container()
-            progress_container = st.container()
-            log_container = st.container()
-            
-            with progress_container:
-                progress_bar = st.progress(0, text="Güncelleme işlemi başlatılıyor...")
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    speed_metric = st.empty()
-                with col2:
-                    eta_metric = st.empty()
-                with col3:
-                    status_metric = st.empty()
-            
-            with log_container:
-                log_placeholder = st.empty()
-            
-            # Streamlit'in zaman aşımına uğramasını engellemek için arka plan görevi
-            def keep_alive_task():
-                while st.session_state.get("update_in_progress"):
-                    time.sleep(15)
-                    st.empty() # Streamlit'in UI'ını yenilemesini tetikle
-            
-            keep_alive_thread = threading.Thread(target=keep_alive_task, daemon=True)
-            keep_alive_thread.start()
+            # İşlemi ayrı bir thread'de başlat
+            thread = threading.Thread(
+                target=_run_price_sync,
+                args=(update_choice, continue_from_last, worker_count, batch_size, retry_count, st.session_state.sync_progress_queue),
+                daemon=True
+            )
+            thread.start()
+            st.rerun()
 
-            def shopify_progress_callback(data):
-                progress = data.get('progress', 0)
-                message = data.get('message', 'İşleniyor...')
-                log_detail = data.get('log_detail')
-                stats = data.get('stats')
-                
-                # Progress bar güncelle
+# Eğer bir işlem devam ediyorsa, ilerlemeyi gösteren alanı oluştur
+if st.session_state.update_in_progress:
+    status_container = st.container()
+    progress_container = st.container()
+    log_container = st.container()
+    
+    with progress_container:
+        progress_bar = st.progress(0, text="Güncelleme işlemi başlatılıyor...")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            speed_metric = st.empty()
+        with col2:
+            eta_metric = st.empty()
+        with col3:
+            status_metric = st.empty()
+    
+    with log_container:
+        log_placeholder = st.empty()
+    
+    # Kuyruğu kontrol eden ana döngü
+    while st.session_state.update_in_progress:
+        try:
+            update_data = st.session_state.sync_progress_queue.get(timeout=1)
+            
+            if "progress" in update_data:
+                progress = update_data['progress']
+                message = update_data.get('message', 'İşleniyor...')
                 progress_bar.progress(progress / 100.0, text=message)
                 
-                # İstatistikleri güncelle
-                if stats:
-                    speed_metric.metric("Hız", f"{stats.get('rate', 0):.1f} varyant/sn")
-                    eta_metric.metric("Tahmini Süre", f"{stats.get('eta', 0):.1f} dakika")
-                    status_metric.metric("İşlem", f"%{progress}")
+            if "stats" in update_data:
+                stats = update_data['stats']
+                speed_metric.metric("Hız", f"{stats.get('rate', 0):.1f} varyant/sn")
+                eta_metric.metric("Tahmini Süre", f"{stats.get('eta', 0):.1f} dakika")
+                status_metric.metric("İşlem", f"%{update_data.get('progress')}")
                 
-                # Log güncelle
-                if log_detail:
-                    st.session_state.sync_log_list.insert(0, f"<div>{log_detail}</div>")
-                    # Son 30 logu göster
-                    log_html = "".join(st.session_state.sync_log_list[:30])
-                    log_placeholder.markdown(
-                        f'''<div style="
-                            height:150px;
-                            overflow-y:auto;
-                            border:1px solid #444;
-                            background:#1e1e1e;
-                            padding:10px;
-                            border-radius:5px;
-                            font-family:monospace;
-                            font-size:12px;
-                            color:#00ff00;">
-                            {log_html}
-                        </div>''', 
-                        unsafe_allow_html=True
-                    )
+            if "log_detail" in update_data:
+                st.session_state.sync_log_list.insert(0, f"<div>{update_data['log_detail']}</div>")
+                log_html = "".join(st.session_state.sync_log_list[:30])
+                log_placeholder.markdown(
+                    f'''<div style="height:150px;overflow-y:auto;border:1px solid #444;background:#1e1e1e;padding:10px;border-radius:5px;font-family:monospace;font-size:12px;color:#00ff00;">{log_html}</div>''', 
+                    unsafe_allow_html=True
+                )
             
-            try:
-                shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
-                
-                # Hangi fiyatları güncelleyeceğimizi belirle
-                if update_choice == "Ana Fiyatlar":
-                    calculated_data_df = st.session_state.calculated_df
-                    price_col = 'NIHAI_SATIS_FIYATI'
-                    compare_col = None
-                else:
-                    calculated_data_df = st.session_state.retail_df
-                    price_col = 'İNDİRİMLİ SATIŞ FİYATI'
-                    compare_col = 'NIHAI_SATIS_FIYATI'
-                
-                # Devam et modunda sadece başarısız olanları güncelle
-                variants_to_update = st.session_state.df_variants
-                if continue_from_last and 'last_failed_skus' in st.session_state:
-                    failed_skus = st.session_state.last_failed_skus
-                    if failed_skus:
-                        with status_container:
-                            st.info(f"🔄 {len(failed_skus)} başarısız varyant tekrar denenecek...")
-                        variants_to_update = variants_to_update[variants_to_update['MODEL KODU'].isin(failed_skus)]
-                
-                # Batch işleme - İyileştirilmiş
-                total_variants = len(variants_to_update)
-                all_results = {"success": 0, "failed": 0, "errors": [], "details": []}
-                
-                # Dinamik batch boyutu
-                actual_batch_size = min(batch_size, 1000) if total_variants > 5000 else batch_size
-                actual_worker_count = min(worker_count, 7) if total_variants > 5000 else worker_count
-                
-                total_batches = (total_variants + actual_batch_size - 1) // actual_batch_size
-                
-                # Batch durumu için container
-                batch_status_container = st.container()
-                
-                for batch_num, batch_start in enumerate(range(0, total_variants, actual_batch_size), 1):
-                    batch_end = min(batch_start + actual_batch_size, total_variants)
-                    batch_variants = variants_to_update.iloc[batch_start:batch_end]
-                    
-                    # Batch bilgisi
-                    with batch_status_container:
-                        batch_col1, batch_col2, batch_col3 = st.columns(3)
-                        with batch_col1:
-                            st.info(f"📦 Batch {batch_num}/{total_batches}")
-                        with batch_col2:
-                            st.info(f"📊 Varyant {batch_start+1}-{batch_end}")
-                        with batch_col3:
-                            batch_progress = st.progress(0)
-                    
-                    # Batch progress callback wrapper
-                    def batch_progress_callback(data):
-                        # Batch içi progress
-                        if 'progress' in data:
-                            batch_internal_progress = data['progress'] / 100
-                            batch_progress.progress(batch_internal_progress)
-                        
-                        # Ana progress callback'i çağır
-                        shopify_progress_callback(data)
-                    
-                    try:
-                        # Batch işleme
-                        batch_start_time = time.time()
-                        
-                        results = send_prices_to_shopify(
-                            shopify_api=shopify_api,
-                            calculated_df=calculated_data_df,
-                            variants_df=batch_variants,
-                            price_column_name=price_col,
-                            compare_price_column_name=compare_col,
-                            progress_callback=batch_progress_callback,
-                            worker_count=actual_worker_count,
-                            max_retries=retry_count
-                        )
-                        
-                        batch_elapsed = time.time() - batch_start_time
-                        
-                        # Sonuçları birleştir
-                        all_results["success"] += results.get("success", 0)
-                        all_results["failed"] += results.get("failed", 0)
-                        all_results["errors"].extend(results.get("errors", []))
-                        all_results["details"].extend(results.get("details", []))
-                        
-                        # Batch özeti
-                        with batch_status_container:
-                            if results.get('success', 0) > 0:
-                                st.success(f"✅ Batch {batch_num}: {results.get('success', 0)} başarılı, {results.get('failed', 0)} başarısız ({batch_elapsed:.1f}s)")
-                            elif results.get('failed', 0) > 0:
-                                st.warning(f"⚠️ Batch {batch_num}: Tümü başarısız ({results.get('failed', 0)} varyant)")
-                        
-                        # Session state'i güncelle (kesinti durumunda kurtarma için)
-                        st.session_state.last_batch_completed = batch_num
-                        st.session_state.interim_results = all_results
-                        
-                    except Exception as batch_error:
-                        st.error(f"Batch {batch_num} hatası: {str(batch_error)[:200]}")
-                        logging.error(f"Batch {batch_num} hatası: {batch_error}")
-                        
-                        # Hata durumunda da devam et
-                        all_results["errors"].append(f"Batch {batch_num}: {str(batch_error)[:100]}")
-                    
-                    # Batch arası işlemler
-                    if batch_num < total_batches:
-                        # Streamlit'in UI'ını yenilemesi için küçük bir bekleme ve boş bir element
-                        time.sleep(0.5) 
-                        st.empty()
-                        
-                        # Rate limit için bekleme
-                        wait_time = 2 if total_variants > 5000 else 1
-                        time.sleep(wait_time)
-                        
-                        # İlerleme durumunu göster
-                        overall_progress = int((batch_num / total_batches) * 100)
-                        progress_bar.progress(overall_progress / 100, text=f"Genel ilerleme: {overall_progress}%")
-                
-                # Sonuçları kaydet
-                st.session_state.last_update_results = all_results
-                st.session_state.update_in_progress = False
-                
-                # Başarısız SKU'ları kaydet
-                failed_details = [d for d in all_results["details"] if d.get("status") == "failed"]
+            if update_data.get("status") == "done":
+                st.session_state.sync_results = update_data.get("results")
+                st.session_state.last_update_results = update_data.get("results")
+                failed_details = [d for d in st.session_state.sync_results.get("details", []) if d.get("status") == "failed"]
                 st.session_state.last_failed_skus = [d.get("sku") for d in failed_details if d.get("sku")]
-                
-                # Temizlik
-                progress_bar.empty()
-                batch_progress.empty()
-                
-                # Final sonuç özeti
-                st.markdown("---")
-                st.markdown("## 📊 Güncelleme Özeti")
-                
-                summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
-                with summary_col1:
-                    st.metric("Toplam İşlenen", total_variants)
-                with summary_col2:
-                    st.metric("✅ Başarılı", all_results.get('success', 0))
-                with summary_col3:
-                    st.metric("❌ Başarısız", all_results.get('failed', 0))
-                with summary_col4:
-                    success_rate = (all_results.get('success', 0) / total_variants * 100) if total_variants > 0 else 0
-                    st.metric("Başarı Oranı", f"{success_rate:.1f}%")
-                
-                # Başarısız olanları tekrar deneme seçeneği
-                if all_results.get('failed', 0) > 0:
-                    st.error(f"❌ {all_results.get('failed', 0)} varyant güncellenemedi.")
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("🔄 Başarısız Olanları Tekrar Dene", use_container_width=True):
-                            st.session_state.continue_from_last = True
-                            st.rerun()
-                    with col2:
-                        # Başarısız SKU'ları indir
-                        if failed_details:
-                            failed_df = pd.DataFrame(failed_details)
-                            csv = failed_df.to_csv(index=False)
-                            st.download_button(
-                                label="📥 Başarısız SKU'ları İndir",
-                                data=csv,
-                                file_name=f"basarisiz_skular_{time.strftime('%Y%m%d_%H%M%S')}.csv",
-                                mime="text/csv",
-                                use_container_width=True
-                            )
-                else:
-                    st.success(f"🎉 Tüm {all_results.get('success', 0)} varyant başarıyla güncellendi!")
-                
-                # Detaylı rapor (isteğe bağlı)
-                with st.expander("📋 Detaylı Rapor", expanded=False):
-                    if all_results.get('details'):
-                        report_df = pd.DataFrame(all_results['details'])
-                        
-                        tab1, tab2 = st.tabs(["✅ Başarılı", "❌ Başarısız"])
-                        
-                        with tab1:
-                            success_df = report_df[report_df['status'] == 'success']
-                            if not success_df.empty:
-                                st.dataframe(
-                                    success_df[['sku', 'price']].head(200),
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-                        
-                        with tab2:
-                            failed_df = report_df[report_df['status'] == 'failed']
-                            if not failed_df.empty:
-                                # Hata gruplandırması
-                                st.markdown("#### Hata Dağılımı")
-                                error_summary = failed_df['reason'].value_counts().head(10)
-                                st.bar_chart(error_summary)
-                                
-                                st.markdown("#### Başarısız Varyantlar")
-                                st.dataframe(
-                                    failed_df[['sku', 'price', 'reason']].head(200),
-                                    use_container_width=True,
-                                    hide_index=True
-                                )
-                
-            except Exception as e:
-                st.error("Güncelleme sırasında kritik hata:")
-                st.exception(e)
                 st.session_state.update_in_progress = False
+                st.rerun() # İşlem tamamlandığında sayfayı yeniden yükle
             
-            finally:
-                # Temizlik
-                if 'progress_bar' in locals():
-                    progress_bar.empty()
-                if 'batch_progress' in locals():
-                    batch_progress.empty()
+            if update_data.get("status") == "error":
+                st.error("Güncelleme sırasında bir hata oluştu: " + update_data.get("message", "Bilinmeyen Hata"))
                 st.session_state.update_in_progress = False
+                st.rerun()
+            
+            st.empty() # Streamlit'in UI'ını yenilemesi için küçük bir bekleme ve boş bir element
+            
+        except queue.Empty:
+            time.sleep(0.5)
+
+# İşlem bittiğinde sonuçları göster
+if st.session_state.sync_results:
+    st.markdown("---")
+    st.markdown("## 📊 Güncelleme Özeti")
+    
+    all_results = st.session_state.sync_results
+    total_variants = sum(1 for d in all_results.get('details', []) if d.get('status'))
+    
+    summary_col1, summary_col2, summary_col3, summary_col4 = st.columns(4)
+    with summary_col1:
+        st.metric("Toplam İşlenen", total_variants)
+    with summary_col2:
+        st.metric("✅ Başarılı", all_results.get('success', 0))
+    with summary_col3:
+        st.metric("❌ Başarısız", all_results.get('failed', 0))
+    with summary_col4:
+        success_rate = (all_results.get('success', 0) / total_variants * 100) if total_variants > 0 else 0
+        st.metric("Başarı Oranı", f"{success_rate:.1f}%")
+    
+    if all_results.get('failed', 0) > 0:
+        st.error(f"❌ {all_results.get('failed', 0)} varyant güncellenemedi.")
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄 Başarısız Olanları Tekrar Dene", use_container_width=True):
+                st.session_state.continue_from_last = True
+                st.session_state.update_in_progress = False
+                st.session_state.sync_results = None
+                st.rerun()
+        with col2:
+            failed_details = [d for d in all_results["details"] if d.get("status") == "failed"]
+            if failed_details:
+                failed_df = pd.DataFrame(failed_details)
+                csv = failed_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Başarısız SKU'ları İndir",
+                    data=csv,
+                    file_name=f"basarisiz_skular_{time.strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv",
+                    use_container_width=True
+                )
+    else:
+        st.success(f"🎉 Tüm {all_results.get('success', 0)} varyant başarıyla güncellendi!")
+    
+    with st.expander("📋 Detaylı Rapor", expanded=False):
+        if all_results.get('details'):
+            report_df = pd.DataFrame(all_results['details'])
+            
+            tab1, tab2 = st.tabs(["✅ Başarılı", "❌ Başarısız"])
+            
+            with tab1:
+                success_df = report_df[report_df['status'] == 'success']
+                if not success_df.empty:
+                    st.dataframe(success_df[['sku', 'price']].head(200), use_container_width=True, hide_index=True)
+            
+            with tab2:
+                failed_df = report_df[report_df['status'] == 'failed']
+                if not failed_df.empty:
+                    st.markdown("#### Hata Dağılımı")
+                    error_summary = failed_df['reason'].value_counts().head(10)
+                    st.bar_chart(error_summary)
+                    
+                    st.markdown("#### Başarısız Varyantlar")
+                    st.dataframe(failed_df[['sku', 'price', 'reason']].head(200), use_container_width=True, hide_index=True)
