@@ -15,13 +15,13 @@ import logging
 
 # Doğrudan içe aktarma için dosya yolunu ekle
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# Bu satır zaten vardı, sorun dosya yolunda değilse kalsın.
+# Bu satırı kaldırın, artık gerekli değil ve bazen sorunlara yol açabiliyor.
 
+# gsheets_manager.py'den gerekli fonksiyonları içe aktar
 from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to_gsheets
 from connectors.shopify_api import ShopifyAPI
 from connectors.sentos_api import SentosAPI
 from operations.price_sync import send_prices_to_shopify
-# from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to_gsheets
 
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():
@@ -97,7 +97,7 @@ st.session_state.setdefault('retail_df', None)
 st.session_state.setdefault('sync_progress_queue', queue.Queue())
 st.session_state.setdefault('sync_log_list', [])
 
-# --- ARAYÜZ (Bu bölümde değişiklik yok) ---
+# --- ARAYÜZ ---
 st.markdown("""
 <div class="main-header">
     <h1>📊 Fiyat Stratejisi Panosu</h1>
