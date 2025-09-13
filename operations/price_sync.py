@@ -1,4 +1,4 @@
-# operations/price_sync.py (Tamamen Düzeltilmiş Sürüm)
+# operations/price_sync.py
 
 import logging
 import json
@@ -67,9 +67,6 @@ def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column
 
     logging.info(f"{len(updates)} adet varyant fiyat güncellemesi başlatılıyor.")
     
-    # Doğrudan REST API kullan - daha basit ve güvenilir
-    # return _update_prices_individually(shopify_api, updates, progress_callback)
-
     # Varyantları product'a göre grupla
     product_variants_map = {}
     skipped_count = 0
