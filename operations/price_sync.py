@@ -5,8 +5,10 @@ import json
 import requests
 import time
 import pandas as pd
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
-def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column_name, compare_price_column_name=None, progress_callback=None):
+def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column_name, compare_price_column_name=None, progress_callback=None, worker_count=5, max_retries=3):
     """
     Hesaplanmış fiyatları (calculated_df) ve tüm varyant listesini (variants_df) alarak
     Shopify'a toplu fiyat güncellemesi gönderir. 
@@ -66,7 +68,7 @@ def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column
     logging.info(f"{len(updates)} adet varyant fiyat güncellemesi başlatılıyor.")
     
     # Doğrudan REST API kullan - daha basit ve güvenilir
-    return _update_prices_individually(shopify_api, updates, progress_callback)
+    # return _update_prices_individually(shopify_api, updates, progress_callback)
 
     # Varyantları product'a göre grupla
     product_variants_map = {}
@@ -122,14 +124,11 @@ def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column
     logging.info(f"{total_variants} adet varyant, {len(product_variants_map)} ürün için güncelleme başlatılıyor.")
     
     # Ürün bazında güncelleme yap
-    return _update_variants_by_product(shopify_api, product_variants_map, progress_callback)
+    return _update_variants_by_product(shopify_api, product_variants_map, progress_callback, max_workers=worker_count, max_retries=max_retries)
 
 
-def _update_variants_by_product(shopify_api, product_variants_map, progress_callback=None):
+def _update_variants_by_product(shopify_api, product_variants_map, progress_callback=None, max_workers=5, max_retries=3):
     """Her ürün için varyantları productVariantsBulkUpdate ile günceller - hızlı yöntem."""
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    import threading
-    
     total_products = len(product_variants_map)
     total_variants = sum(len(variants) for variants in product_variants_map.values())
     details = []
@@ -144,59 +143,44 @@ def _update_variants_by_product(shopify_api, product_variants_map, progress_call
     def update_product_variants(product_id, variants):
         nonlocal processed_products, success_count, failed_count
         
-        try:
-            # productVariantsBulkUpdate mutation'ı
-            mutation = """
-            mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-                productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-                    productVariants {
-                        id
-                        price
-                        compareAtPrice
-                    }
-                    userErrors {
-                        field
-                        message
+        for attempt in range(max_retries):
+            try:
+                mutation = """
+                mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+                    productVariantsBulkUpdate(input: { productId: $productId, variants: $variants }) {
+                        productVariants {
+                            id
+                            price
+                            compareAtPrice
+                        }
+                        userErrors {
+                            field
+                            message
+                        }
                     }
                 }
-            }
-            """
-            
-            # Varyant input'larını hazırla
-            variant_inputs = []
-            for variant in variants:
-                variant_input = {
-                    "id": variant["id"],
-                    "price": variant["price"]
-                }
-                if "compareAtPrice" in variant:
-                    variant_input["compareAtPrice"] = variant["compareAtPrice"]
-                variant_inputs.append(variant_input)
-            
-            # Mutation'ı çalıştır
-            result = shopify_api.execute_graphql(mutation, {
-                "productId": product_id,
-                "variants": variant_inputs
-            })
-            
-            with counter_lock:
-                processed_products += 1
+                """
                 
-                if user_errors := result.get("productVariantsBulkUpdate", {}).get("userErrors"):
-                    # Hata varsa
-                    for variant in variants:
-                        failed_count += 1
+                variant_inputs = []
+                for variant in variants:
+                    variant_input = {
+                        "id": variant["id"],
+                        "price": variant["price"]
+                    }
+                    if "compareAtPrice" in variant:
+                        variant_input["compareAtPrice"] = variant["compareAtPrice"]
+                    variant_inputs.append(variant_input)
+                
+                result = shopify_api.execute_graphql(mutation, {
+                    "productId": product_id,
+                    "variants": variant_inputs
+                })
+                
+                with counter_lock:
+                    if user_errors := result.get("productVariantsBulkUpdate", {}).get("userErrors"):
                         error_msg = ", ".join([f"{err.get('field', '')}: {err.get('message', '')}" for err in user_errors])
-                        details.append({
-                            "status": "failed",
-                            "variant_id": variant["id"],
-                            "sku": variant.get("sku"),
-                            "price": variant["price"],
-                            "reason": error_msg
-                        })
-                    errors.extend([err.get('message', 'Bilinmeyen hata') for err in user_errors])
-                else:
-                    # Başarılı
+                        raise Exception(f"GraphQL hatası: {error_msg}")
+                    
                     for variant in variants:
                         success_count += 1
                         details.append({
@@ -207,29 +191,33 @@ def _update_variants_by_product(shopify_api, product_variants_map, progress_call
                             "reason": "Başarıyla güncellendi."
                         })
                     
-                if progress_callback and processed_products % 10 == 0:
-                    progress = int((processed_products / total_products) * 100)
-                    progress_callback({
-                        'progress': progress,
-                        'message': f'Ürünler güncelleniyor: {processed_products}/{total_products} (✅ {success_count} / ❌ {failed_count} varyant)'
-                    })
+                    processed_products += 1
                     
-        except Exception as e:
-            with counter_lock:
-                processed_products += 1
-                for variant in variants:
-                    failed_count += 1
-                    details.append({
-                        "status": "failed",
-                        "variant_id": variant["id"],
-                        "sku": variant.get("sku"),
-                        "price": variant["price"],
-                        "reason": str(e)
-                    })
-                errors.append(str(e))
-    
-    # GraphQL mutation'ları için 5 worker yeterli (REST'ten daha hızlı)
-    max_workers = min(5, total_products)
+                    if progress_callback and processed_products % 10 == 0:
+                        progress = int((processed_products / total_products) * 100)
+                        progress_callback({
+                            'progress': progress,
+                            'message': f'Ürünler güncelleniyor: {processed_products}/{total_products} (✅ {success_count} / ❌ {failed_count} varyant)'
+                        })
+                    break # Başarılıysa döngüden çık
+                
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    logging.warning(f"Ürün {product_id} için güncelleme başarısız. Tekrar denenecek... (Deneme {attempt + 1}/{max_retries}) Hata: {e}")
+                    time.sleep(2)
+                else:
+                    with counter_lock:
+                        processed_products += 1
+                        for variant in variants:
+                            failed_count += 1
+                            details.append({
+                                "status": "failed",
+                                "variant_id": variant["id"],
+                                "sku": variant.get("sku"),
+                                "price": variant["price"],
+                                "reason": str(e)
+                            })
+                        errors.append(str(e))
     
     logging.info(f"🚀 {total_products} ürün için {max_workers} worker ile GraphQL güncelleme başlatılıyor...")
     

@@ -357,8 +357,8 @@ if st.session_state.calculated_df is not None:
                         price_column_name=price_col,
                         compare_price_column_name=compare_col,
                         progress_callback=shopify_progress_callback,
-                        worker_count=worker_count,  # Worker sayısını gönder
-                        max_retries=retry_count      # Retry sayısını gönder
+                        worker_count=worker_count,
+                        max_retries=retry_count
                     )
                     
                     # Sonuçları birleştir
