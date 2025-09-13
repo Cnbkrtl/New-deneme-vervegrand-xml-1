@@ -14,10 +14,6 @@ import time
 import logging
 import traceback
 
-# Doğrudan içe aktarma için dosya yolunu ekle
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# Bu satırı kaldırın, artık gerekli değil ve bazen sorunlara yol açabiliyor.
-
 # gsheets_manager.py'den gerekli fonksiyonları içe aktar
 from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to_gsheets
 from connectors.shopify_api import ShopifyAPI
