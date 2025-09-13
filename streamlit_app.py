@@ -6,6 +6,8 @@ import streamlit_authenticator as stauth
 from yaml.loader import SafeLoader
 import pandas as pd
 from io import StringIO
+import threading
+import queue
 
 # Gerekli modülleri import ediyoruz
 from config_manager import load_all_user_keys
@@ -16,13 +18,18 @@ from connectors.sentos_api import SentosAPI
 
 st.set_page_config(page_title="Vervegrand Sync", page_icon="🔄", layout="wide", initial_sidebar_state="expanded")
 
+# YENİ: Oturum durumu için başlangıç değerlerini ayarlayan fonksiyon
 def initialize_session_state_defaults():
     """Oturum durumu için başlangıç değerlerini ayarlar."""
     defaults = {
         'authentication_status': None,
         'shopify_status': 'pending', 'sentos_status': 'pending',
         'shopify_data': {}, 'sentos_data': {}, 'user_data_loaded_for': None,
-        'price_df': None, 'calculated_df': None
+        'price_df': None, 'calculated_df': None,
+        'shopify_store': None, 'shopify_token': None,
+        'sentos_api_url': None, 'sentos_api_key': None, 'sentos_api_secret': None, 'sentos_cookie': None,
+        'update_in_progress': False,
+        'sync_progress_queue': queue.Queue()
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -30,6 +37,7 @@ def initialize_session_state_defaults():
 
 def load_and_verify_user_data(username):
     """Kullanıcıya özel sırları ve verileri yükler, bağlantıları test eder."""
+    # YENİ: Oturum durumu önceden yüklenmişse tekrar yüklemeye gerek yok
     if st.session_state.get('user_data_loaded_for') == username:
         return
 
@@ -67,6 +75,8 @@ def load_and_verify_user_data(username):
     st.session_state['user_data_loaded_for'] = username
 
 # --- Ana Uygulama Mantığı ---
+initialize_session_state_defaults() # Sayfa yüklenirken varsayılan değerleri ayarla
+
 with open('config.yaml') as file:
     config = yaml.load(file, Loader=SafeLoader)
 
@@ -90,5 +100,4 @@ elif st.session_state.get("authentication_status") is False:
     st.error('Kullanıcı adı/şifre hatalı')
 
 elif st.session_state.get("authentication_status") is None:
-    initialize_session_state_defaults()
     st.warning('Lütfen kullanıcı adı ve şifrenizi girin')
