@@ -10,6 +10,7 @@ import sys
 import os
 import queue
 import threading
+import time
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from connectors.shopify_api import ShopifyAPI
@@ -218,7 +219,9 @@ if st.session_state.calculated_df is not None:
             'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', "TOPTAN FİYAT (KDV'siz)": '{:,.2f} ₺', "TOPTAN FİYAT (KDV'li)": '{:,.2f} ₺', 'TOPTAN KÂR': '{:,.2f} ₺'
         }), use_container_width=True)
 
-    st.markdown("---"); st.subheader("Adım 4: Kaydet ve Shopify'a Gönder")
+    st.markdown("---")
+    st.subheader("Adım 4: Kaydet ve Shopify'a Gönder")
+    
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True):
@@ -227,10 +230,59 @@ if st.session_state.calculated_df is not None:
                 discount_df = st.session_state.retail_df[['MODEL KODU', 'ÜRÜN ADI', 'İNDİRİMLİ SATIŞ FİYATI']]
                 wholesale_df = wholesale_df[['MODEL KODU', 'ÜRÜN ADI', "TOPTAN FİYAT (KDV'li)"]]
                 success, url = save_pricing_data_to_gsheets(main_df, discount_df, wholesale_df)
-            if success: st.success(f"Veriler başarıyla kaydedildi! [E-Tabloyu Görüntüle]({url})")
+            if success: 
+                st.success(f"Veriler başarıyla kaydedildi! [E-Tabloyu Görüntüle]({url})")
     
     with col2:
+        # Shopify güncelleme ayarları
+        with st.expander("⚙️ Güncelleme Ayarları", expanded=False):
+            col_a, col_b = st.columns(2)
+            
+            with col_a:
+                worker_count = st.slider(
+                    "🔧 Paralel Worker Sayısı",
+                    min_value=1,
+                    max_value=15,
+                    value=10,
+                    help="Daha fazla worker = daha hızlı güncelleme. Ancak çok fazla worker rate limit'e takılabilir."
+                )
+                
+                batch_size = st.number_input(
+                    "📦 Batch Boyutu",
+                    min_value=100,
+                    max_value=10000,
+                    value=1000,
+                    step=100,
+                    help="Tek seferde kaç varyant güncellensin? Büyük batch'ler için daha fazla bellek gerekir."
+                )
+            
+            with col_b:
+                retry_count = st.number_input(
+                    "🔄 Tekrar Deneme Sayısı",
+                    min_value=1,
+                    max_value=5,
+                    value=3,
+                    help="Hata durumunda kaç kez tekrar denensin?"
+                )
+                
+                continue_from_last = st.checkbox(
+                    "⏯️ Kaldığı yerden devam et",
+                    value=False,
+                    help="Önceki güncelleme yarıda kaldıysa, başarısız olanları tekrar dene"
+                )
+        
         update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
+        
+        # Devam et modunda önceki sonuçları göster
+        if continue_from_last and 'last_update_results' in st.session_state:
+            last_results = st.session_state.last_update_results
+            st.info(f"""
+            📊 Önceki güncelleme sonucu:
+            - ✅ Başarılı: {last_results.get('success', 0)}
+            - ❌ Başarısız: {last_results.get('failed', 0)}
+            - 🔄 Tekrar denenecek: {last_results.get('failed', 0)} varyant
+            """)
+        
         if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary"):
             if st.session_state.df_variants is None or st.session_state.df_variants.empty:
                 st.error("HATA: Hafızada varyant verisi bulunamadı. Lütfen önce Sentos'tan veri çekin.")
@@ -239,23 +291,37 @@ if st.session_state.calculated_df is not None:
             st.session_state.sync_log_list = []
             progress_bar = st.progress(0, text="Güncelleme işlemi başlatılıyor...")
             log_placeholder = st.empty()
+            stats_placeholder = st.empty()  # İstatistikler için
             
             def shopify_progress_callback(data):
                 progress = data.get('progress', 0)
                 message = data.get('message', 'İşleniyor...')
                 log_detail = data.get('log_detail')
+                stats = data.get('stats')
                 
                 if progress_bar:
                     progress_bar.progress(progress / 100.0, text=message)
                 
+                # İstatistikleri güncelle
+                if stats and stats_placeholder:
+                    stats_placeholder.metric(
+                        label="Güncelleme Hızı",
+                        value=f"{stats.get('rate', 0):.1f} varyant/saniye",
+                        delta=f"Tahmini süre: {stats.get('eta', 0):.1f} dakika"
+                    )
+                
                 if log_detail and log_placeholder:
                     st.session_state.sync_log_list.insert(0, log_detail)
-                    # Sadece son 50 logu göster
                     log_html = "".join(st.session_state.sync_log_list[:50])
-                    log_placeholder.markdown(f'<div style="height:200px;overflow-y:scroll;border:1px solid #333;padding:10px;border-radius:5px;font-family:monospace;">{log_html}</div>', unsafe_allow_html=True)
+                    log_placeholder.markdown(
+                        f'<div style="height:200px;overflow-y:scroll;border:1px solid #333;padding:10px;border-radius:5px;font-family:monospace;">{log_html}</div>', 
+                        unsafe_allow_html=True
+                    )
             
             try:
                 shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
+                
+                # Hangi fiyatları güncelleyeceğimizi belirle
                 calculated_data_df, price_col, compare_col = pd.DataFrame(), None, None
                 if update_choice == "Ana Fiyatlar":
                     calculated_data_df = df
@@ -266,47 +332,122 @@ if st.session_state.calculated_df is not None:
                     price_col = 'İNDİRİMLİ SATIŞ FİYATI'
                     compare_col = 'NIHAI_SATIS_FIYATI'
                 
-                results = send_prices_to_shopify(
-                    shopify_api=shopify_api,
-                    calculated_df=calculated_data_df,
-                    variants_df=st.session_state.df_variants,
-                    price_column_name=price_col,
-                    compare_price_column_name=compare_col,
-                    progress_callback=shopify_progress_callback
-                )
-
+                # Devam et modunda sadece başarısız olanları güncelle
+                variants_to_update = st.session_state.df_variants
+                if continue_from_last and 'last_failed_skus' in st.session_state:
+                    failed_skus = st.session_state.last_failed_skus
+                    if failed_skus:
+                        st.info(f"🔄 {len(failed_skus)} başarısız varyant tekrar denenecek...")
+                        variants_to_update = variants_to_update[variants_to_update['MODEL KODU'].isin(failed_skus)]
+                
+                # Batch işleme
+                total_variants = len(variants_to_update)
+                all_results = {"success": 0, "failed": 0, "errors": [], "details": []}
+                
+                for batch_start in range(0, total_variants, batch_size):
+                    batch_end = min(batch_start + batch_size, total_variants)
+                    batch_variants = variants_to_update.iloc[batch_start:batch_end]
+                    
+                    st.info(f"📦 Batch {batch_start//batch_size + 1}: {batch_start+1}-{batch_end} arası varyantlar işleniyor...")
+                    
+                    results = send_prices_to_shopify(
+                        shopify_api=shopify_api,
+                        calculated_df=calculated_data_df,
+                        variants_df=batch_variants,
+                        price_column_name=price_col,
+                        compare_price_column_name=compare_col,
+                        progress_callback=shopify_progress_callback,
+                        worker_count=worker_count,  # Worker sayısını gönder
+                        max_retries=retry_count      # Retry sayısını gönder
+                    )
+                    
+                    # Sonuçları birleştir
+                    all_results["success"] += results.get("success", 0)
+                    all_results["failed"] += results.get("failed", 0)
+                    all_results["errors"].extend(results.get("errors", []))
+                    all_results["details"].extend(results.get("details", []))
+                    
+                    # Batch arası kısa bekleme (rate limit için)
+                    if batch_end < total_variants:
+                        time.sleep(2)
+                
+                # Sonuçları session state'e kaydet (devam et özelliği için)
+                st.session_state.last_update_results = all_results
+                
+                # Başarısız SKU'ları kaydet
+                failed_details = [d for d in all_results["details"] if d["status"] == "failed"]
+                st.session_state.last_failed_skus = [d["sku"] for d in failed_details]
+                
                 progress_bar.empty()
                 log_placeholder.empty()
+                stats_placeholder.empty()
 
-                if results.get('success', 0) > 0:
-                    st.success(f"İşlem Tamamlandı! ✅ {results.get('success', 0)} varyant başarıyla güncellendi.")
+                # Sonuç özeti
+                if all_results.get('success', 0) > 0:
+                    st.success(f"İşlem Tamamlandı! ✅ {all_results.get('success', 0)} varyant başarıyla güncellendi.")
                 
-                if results.get('failed', 0) > 0:
-                    st.error(f"❌ {results.get('failed', 0)} varyant güncellenirken hata oluştu.")
+                if all_results.get('failed', 0) > 0:
+                    st.error(f"❌ {all_results.get('failed', 0)} varyant güncellenirken hata oluştu.")
+                    if st.button("🔄 Başarısız olanları tekrar dene", use_container_width=True):
+                        st.rerun()
                 
-                if results.get('details'):
+                # Detaylı rapor
+                if all_results.get('details'):
                     st.markdown("---")
-                    st.markdown("### Güncelleme Raporu")
-                    report_df = pd.DataFrame(results['details'])
+                    st.markdown("### 📊 Güncelleme Raporu")
                     
-                    st.markdown("#### Başarılı Olanlar")
-                    success_df = report_df[report_df['status'] == 'success']
-                    if not success_df.empty:
-                        st.dataframe(success_df[['sku', 'price', 'variant_id']], use_container_width=True, hide_index=True)
-                    else:
-                        st.info("Hiçbir varyant başarıyla güncellenemedi.")
+                    report_df = pd.DataFrame(all_results['details'])
                     
-                    st.markdown("---")
+                    # Özet metrikleri göster
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("Toplam İşlenen", len(report_df))
+                    with col2:
+                        st.metric("Başarılı", len(report_df[report_df['status'] == 'success']))
+                    with col3:
+                        st.metric("Başarısız", len(report_df[report_df['status'] == 'failed']))
+                    with col4:
+                        success_rate = (len(report_df[report_df['status'] == 'success']) / len(report_df) * 100) if len(report_df) > 0 else 0
+                        st.metric("Başarı Oranı", f"{success_rate:.1f}%")
                     
-                    st.markdown("#### Başarısız Olanlar")
-                    failed_df = report_df[report_df['status'] == 'failed']
-                    if not failed_df.empty:
-                        st.dataframe(failed_df[['sku', 'price', 'reason']], use_container_width=True, hide_index=True)
-                    else:
-                        st.info("Hiçbir varyant güncellenirken hata oluşmadı.")
+                    # Detaylı tablolar
+                    tab1, tab2 = st.tabs(["✅ Başarılı Güncellenenler", "❌ Başarısız Olanlar"])
+                    
+                    with tab1:
+                        success_df = report_df[report_df['status'] == 'success']
+                        if not success_df.empty:
+                            st.dataframe(
+                                success_df[['sku', 'price']].head(100),
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                            if len(success_df) > 100:
+                                st.info(f"İlk 100 kayıt gösteriliyor. Toplam: {len(success_df)}")
+                        else:
+                            st.info("Hiçbir varyant başarıyla güncellenemedi.")
+                    
+                    with tab2:
+                        failed_df = report_df[report_df['status'] == 'failed']
+                        if not failed_df.empty:
+                            st.dataframe(
+                                failed_df[['sku', 'price', 'reason']],
+                                use_container_width=True,
+                                hide_index=True
+                            )
+                            
+                            # Hata analizi
+                            st.markdown("#### 🔍 Hata Analizi")
+                            error_counts = failed_df['reason'].value_counts().head(10)
+                            for error, count in error_counts.items():
+                                st.text(f"• {error[:100]}... ({count} kez)")
+                        else:
+                            st.info("Tüm varyantlar başarıyla güncellendi!")
+                            
             except Exception as e:
                 st.error("Güncelleme sırasında beklenmedik bir hata oluştu:")
                 st.exception(e)
             finally:
                 if 'progress_bar' in locals():
                     progress_bar.empty()
+                if 'stats_placeholder' in locals():
+                    stats_placeholder.empty()
