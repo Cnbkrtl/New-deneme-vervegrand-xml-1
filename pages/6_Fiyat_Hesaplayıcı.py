@@ -1,4 +1,4 @@
-# pages/6_Fiyat_Hesaplayıcı.py (Son Hatalar Giderilmiş Sürüm)
+# pages/6_Fiyat_Hesaplayıcı.py
 
 import streamlit as st
 import pandas as pd
@@ -13,11 +13,15 @@ import threading
 import time
 import logging
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Doğrudan içe aktarma için dosya yolunu ekle
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# Bu satır zaten vardı, sorun dosya yolunda değilse kalsın.
+
+from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to_gsheets
 from connectors.shopify_api import ShopifyAPI
 from connectors.sentos_api import SentosAPI
 from operations.price_sync import send_prices_to_shopify
-from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to_gsheets
+# from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to_gsheets
 
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():

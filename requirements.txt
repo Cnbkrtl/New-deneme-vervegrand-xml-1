@@ -4,7 +4,7 @@ streamlit
 requests
 pandas
 cryptography
-streamlit-authenticator>=0.3.0  # <<< BU SATIRI BU ŞEKİLDE GÜNCELLEYİN VEYA EKLEYİN
+streamlit-authenticator>=0.3.0
 PyYAML
 bcrypt
 openpyxl
