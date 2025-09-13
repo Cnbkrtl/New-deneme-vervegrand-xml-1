@@ -142,6 +142,7 @@ def _update_prices_parallel(shopify_api, price_updates: list, progress_callback=
                 if "compareAtPrice" in update_data:
                     variant_data["variant"]["compare_at_price"] = str(update_data["compareAtPrice"])
                 
+                # ShopifyAPI içindeki _make_request metodunu kullanarak daha sağlam bir çağrı
                 response = shopify_api._make_request("PUT", endpoint, data=variant_data)
                 
                 with counter_lock:
@@ -174,21 +175,21 @@ def _update_prices_parallel(shopify_api, price_updates: list, progress_callback=
                     else:
                         raise Exception("API yanıt vermedi")
                         
-            except Exception as e:
+            except requests.exceptions.HTTPError as e:
                 error_str = str(e)
                 
-                # Rate limit kontrolü
-                if "429" in error_str or "Too Many Requests" in error_str or "throttle" in error_str.lower():
+                # 429 (Too Many Requests) hatasını yakala
+                if e.response.status_code == 429:
                     with counter_lock:
                         rate_limit_hits += 1
                     
                     if attempt < max_retries - 1:
                         wait_time = (2 ** attempt) + random.uniform(0, 2)  # Üstel geri çekilme
-                        logging.warning(f"Rate limit! SKU {sku} için {wait_time:.1f}s bekleniyor...")
+                        logging.warning(f"Rate limit! SKU {sku} için {wait_time:.1f}s bekleniyor... (Deneme {attempt+1})")
                         time.sleep(wait_time)
                         continue
                 
-                # Son deneme başarısız
+                # Diğer HTTP hataları veya son deneme
                 if attempt == max_retries - 1:
                     with counter_lock:
                         failed_count += 1
@@ -207,6 +208,27 @@ def _update_prices_parallel(shopify_api, price_updates: list, progress_callback=
                 
                 # Tekrar dene
                 time.sleep(1)
+
+            except Exception as e:
+                # Diğer tüm hatalar
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                
+                with counter_lock:
+                    failed_count += 1
+                    if processed_count % 50 == 0 and progress_callback:
+                        progress_callback({
+                            'log_detail': f"<div style='color:#f44336'>❌ Hata: SKU {sku} - {str(e)[:50]}</div>"
+                        })
+                
+                return {
+                    "status": "failed",
+                    "variant_id": variant_gid,
+                    "sku": sku,
+                    "price": update_data.get("price"),
+                    "reason": f"Hata: {str(e)[:100]}"
+                }
     
     logging.info(f"🚀 {total} varyant için {worker_count} worker ile paralel güncelleme başlatılıyor...")
     
@@ -314,11 +336,33 @@ def _update_prices_sequentially(shopify_api, price_updates: list, progress_callb
                 else:
                     raise Exception("API yanıt vermedi")
                     
+            except requests.exceptions.HTTPError as e:
+                # 429 (Too Many Requests) hatasını yakala
+                if e.response.status_code == 429:
+                    if attempt < max_retries - 1:
+                        time.sleep((2 ** attempt) + random.uniform(0, 2))
+                        continue
+                
+                # Diğer HTTP hataları veya son deneme
+                if attempt == max_retries - 1:
+                    failed_count += 1
+                    error_msg = str(e)[:100]
+                    errors.append(error_msg)
+                    details.append({
+                        "status": "failed",
+                        "variant_id": variant_gid,
+                        "sku": sku,
+                        "price": update.get("price"),
+                        "reason": error_msg
+                    })
+                break
+
             except Exception as e:
+                # Diğer tüm hatalar
                 if attempt < max_retries - 1:
-                    time.sleep(2)
+                    time.sleep(1)
                     continue
-                    
+
                 failed_count += 1
                 error_msg = str(e)[:100]
                 errors.append(error_msg)
@@ -329,6 +373,7 @@ def _update_prices_sequentially(shopify_api, price_updates: list, progress_callb
                     "price": update.get("price"),
                     "reason": error_msg
                 })
+                break
     
     if progress_callback:
         progress_callback({
