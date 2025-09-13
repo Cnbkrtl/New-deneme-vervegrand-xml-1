@@ -1,8 +1,14 @@
 # gsheets_manager.py
 
-import gspread
-from gspread_dataframe import set_with_dataframe, get_dataframe
-from oauth2client.service_account import ServiceAccountCredentials
+try:
+    import gspread
+    from gspread_dataframe import set_with_dataframe, get_dataframe
+    from oauth2client.service_account import ServiceAccountCredentials
+except ImportError:
+    import streamlit as st
+    st.error("Gerekli Google Sheets bağımlılıkları yüklenemedi. Lütfen 'requirements.txt' dosyasını kontrol edin ve tekrar deneyin.")
+    st.stop()
+    
 import streamlit as st
 import pandas as pd
 import logging
