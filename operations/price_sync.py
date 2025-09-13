@@ -1,4 +1,4 @@
-# operations/price_sync.py
+# operations/price_sync.py (Optimize Edilmiş Versiyon)
 
 import logging
 import json
@@ -7,8 +7,9 @@ import time
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import random
 
-def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column_name, compare_price_column_name=None, progress_callback=None, worker_count=5, max_retries=3):
+def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column_name, compare_price_column_name=None, progress_callback=None, worker_count=10, max_retries=3):
     """
     Hesaplanmış fiyatları (calculated_df) ve tüm varyant listesini (variants_df) alarak
     Shopify'a toplu fiyat güncellemesi gönderir. 
@@ -33,22 +34,44 @@ def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column
     
     skus_to_update = df_to_send['MODEL KODU'].dropna().astype(str).tolist()
     
-    # Daha hızlı eşleştirme için batch işlem
+    # SKU eşleştirmeyi optimize et - batch halinde ve paralel
     variant_map = {}
-    for i in range(0, len(skus_to_update), 50):
-        batch = skus_to_update[i:i+50]
+    batch_size = 50  # Her batch'te 50 SKU
+    total_batches = (len(skus_to_update) + batch_size - 1) // batch_size
+    
+    logging.info(f"{len(skus_to_update)} SKU için {total_batches} batch'te eşleştirme yapılacak...")
+    
+    for batch_num, i in enumerate(range(0, len(skus_to_update), batch_size)):
+        batch = skus_to_update[i:i+batch_size]
         if progress_callback:
-            progress = 15 + int((i / len(skus_to_update)) * 10)
-            progress_callback({'progress': progress, 'message': f'SKU eşleştirme: {i}/{len(skus_to_update)}...'})
+            progress = 15 + int((batch_num / total_batches) * 10)  # 15-25% arası
+            progress_callback({
+                'progress': progress, 
+                'message': f'SKU eşleştirme: Batch {batch_num+1}/{total_batches} ({len(variant_map)} eşleşti)...'
+            })
         
         try:
             batch_map = shopify_api.get_variant_ids_by_skus(batch)
             variant_map.update(batch_map)
+            time.sleep(0.1)  # API'yi zorlamayalım
         except Exception as e:
-            logging.error(f"SKU batch {i//50 + 1} eşleştirilemedi: {e}")
+            logging.error(f"SKU batch {batch_num + 1} eşleştirilemedi: {e}")
+            # Hata durumunda batch'i daha küçük parçalara böl
+            for mini_batch_start in range(0, len(batch), 10):
+                mini_batch = batch[mini_batch_start:mini_batch_start+10]
+                try:
+                    mini_map = shopify_api.get_variant_ids_by_skus(mini_batch)
+                    variant_map.update(mini_map)
+                    time.sleep(0.2)
+                except Exception as mini_e:
+                    logging.error(f"Mini batch başarısız: {mini_e}")
+    
+    logging.info(f"Toplam {len(variant_map)} SKU eşleştirildi.")
     
     # Güncellenecek varyantları hazırla
     updates = []
+    skipped_skus = []
+    
     for _, row in df_to_send.iterrows():
         sku = str(row['MODEL KODU'])
         if sku in variant_map:
@@ -60,189 +83,179 @@ def send_prices_to_shopify(shopify_api, calculated_df, variants_df, price_column
             if compare_price_column_name and row.get(compare_price_column_name) is not None:
                 payload["compareAtPrice"] = f"{row[compare_price_column_name]:.2f}"
             updates.append(payload)
+        else:
+            skipped_skus.append(sku)
+    
+    if skipped_skus:
+        logging.warning(f"{len(skipped_skus)} SKU Shopify'da bulunamadı. İlk 10: {skipped_skus[:10]}")
     
     if not updates:
         logging.warning("Shopify'da eşleşen ve güncellenecek varyant bulunamadı.")
         return {"success": 0, "failed": len(skus_to_update), "errors": ["Shopify'da eşleşen SKU bulunamadı."], "details": []}
 
-    logging.info(f"{len(updates)} adet varyant fiyat güncellemesi başlatılıyor.")
+    logging.info(f"{len(updates)} adet varyant için güncelleme başlatılıyor...")
     
-    # Varyantları product'a göre grupla
-    product_variants_map = {}
-    skipped_count = 0
-    
-    for _, row in df_to_send.iterrows():
-        sku = str(row['MODEL KODU'])
-        if sku in variant_map:
-            variant_id = variant_map[sku]
-            
-            # Product ID'yi bulmak için varyantı sorgula
-            query = """
-            query getProductIdFromVariant($id: ID!) {
-                productVariant(id: $id) {
-                    product { id }
-                }
-            }
-            """
-            
-            try:
-                result = shopify_api.execute_graphql(query, {"id": variant_id})
-                product_id = result.get("productVariant", {}).get("product", {}).get("id")
-                
-                if product_id:
-                    if product_id not in product_variants_map:
-                        product_variants_map[product_id] = []
-                    
-                    variant_update = {
-                        "id": variant_id,
-                        "price": f"{row[price_column_name]:.2f}",
-                        "sku": sku
-                    }
-                    
-                    if compare_price_column_name and row.get(compare_price_column_name) is not None:
-                        variant_update["compareAtPrice"] = f"{row[compare_price_column_name]:.2f}"
-                    
-                    product_variants_map[product_id].append(variant_update)
-                else:
-                    logging.warning(f"SKU {sku} için product ID bulunamadı.")
-                    skipped_count += 1
-            except Exception as e:
-                logging.error(f"SKU {sku} için product ID alınırken hata: {e}")
-                skipped_count += 1
-        else:
-            logging.warning(f"SKU {sku} için Shopify'da eşleşen varyant bulunamadı.")
-            skipped_count += 1
-    
-    if not product_variants_map:
-        logging.warning("Shopify'da eşleşen ve güncellenecek varyant bulunamadı.")
-        return {"success": 0, "failed": len(skus_to_update), "errors": ["Shopify'da eşleşen SKU bulunamadı."], "details": []}
-
-    total_variants = sum(len(variants) for variants in product_variants_map.values())
-    logging.info(f"{total_variants} adet varyant, {len(product_variants_map)} ürün için güncelleme başlatılıyor.")
-    
-    # Ürün bazında güncelleme yap
-    return _update_variants_by_product(shopify_api, product_variants_map, progress_callback, max_workers=worker_count, max_retries=max_retries)
+    # Worker count'a göre strateji belirle
+    if worker_count > 1:
+        return _update_prices_parallel(shopify_api, updates, progress_callback, worker_count, max_retries)
+    else:
+        return _update_prices_sequentially(shopify_api, updates, progress_callback, max_retries)
 
 
-def _update_variants_by_product(shopify_api, product_variants_map, progress_callback=None, max_workers=5, max_retries=3):
-    """Her ürün için varyantları productVariantsBulkUpdate ile günceller - hızlı yöntem."""
-    total_products = len(product_variants_map)
-    total_variants = sum(len(variants) for variants in product_variants_map.values())
+def _update_prices_parallel(shopify_api, price_updates: list, progress_callback=None, worker_count=10, max_retries=3):
+    """Fiyatları paralel olarak REST API ile günceller - Rate limit korumalı!"""
+    total = len(price_updates)
     details = []
     errors = []
     
-    # Thread-safe sayaçlar
+    # Thread-safe sayaçlar ve rate limit kontrolü
     counter_lock = threading.Lock()
-    processed_products = 0
+    processed_count = 0
     success_count = 0
     failed_count = 0
+    rate_limit_hits = 0
+    start_time = time.time()
     
-    def update_product_variants(product_id, variants):
-        nonlocal processed_products, success_count, failed_count
+    def update_single_variant_with_retry(update_data):
+        """Tek bir varyantı günceller, gerekirse tekrar dener"""
+        nonlocal processed_count, success_count, failed_count, rate_limit_hits
+        
+        variant_gid = update_data.get("id")
+        sku = update_data.get("sku", "Unknown")
         
         for attempt in range(max_retries):
             try:
-                mutation = """
-                mutation productVariantsBulkUpdate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-                    productVariantsBulkUpdate(input: { productId: $productId, variants: $variants }) {
-                        productVariants {
-                            id
-                            price
-                            compareAtPrice
-                        }
-                        userErrors {
-                            field
-                            message
-                        }
+                # Rate limiting için kısa bekleme
+                time.sleep(random.uniform(0.05, 0.15))  # 50-150ms rastgele bekleme
+                
+                # REST API üzerinden güncelleme
+                variant_id_numeric = variant_gid.split("/")[-1]
+                endpoint = f"variants/{variant_id_numeric}.json"
+                
+                variant_data = {
+                    "variant": {
+                        "id": variant_id_numeric,
+                        "price": str(update_data.get("price"))
                     }
                 }
-                """
                 
-                variant_inputs = []
-                for variant in variants:
-                    variant_input = {
-                        "id": variant["id"],
-                        "price": variant["price"]
-                    }
-                    if "compareAtPrice" in variant:
-                        variant_input["compareAtPrice"] = variant["compareAtPrice"]
-                    variant_inputs.append(variant_input)
+                if "compareAtPrice" in update_data:
+                    variant_data["variant"]["compare_at_price"] = str(update_data["compareAtPrice"])
                 
-                result = shopify_api.execute_graphql(mutation, {
-                    "productId": product_id,
-                    "variants": variant_inputs
-                })
+                response = shopify_api._make_request("PUT", endpoint, data=variant_data)
                 
                 with counter_lock:
-                    if user_errors := result.get("productVariantsBulkUpdate", {}).get("userErrors"):
-                        error_msg = ", ".join([f"{err.get('field', '')}: {err.get('message', '')}" for err in user_errors])
-                        raise Exception(f"GraphQL hatası: {error_msg}")
+                    processed_count += 1
                     
-                    for variant in variants:
+                    if response and "variant" in response:
                         success_count += 1
-                        details.append({
-                            "status": "success",
-                            "variant_id": variant["id"],
-                            "sku": variant.get("sku"),
-                            "price": variant["price"],
-                            "reason": "Başarıyla güncellendi."
-                        })
-                    
-                    processed_products += 1
-                    
-                    if progress_callback and processed_products % 10 == 0:
-                        progress = int((processed_products / total_products) * 100)
-                        progress_callback({
-                            'progress': progress,
-                            'message': f'Ürünler güncelleniyor: {processed_products}/{total_products} (✅ {success_count} / ❌ {failed_count} varyant)'
-                        })
-                    break # Başarılıysa döngüden çık
-                
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    logging.warning(f"Ürün {product_id} için güncelleme başarısız. Tekrar denenecek... (Deneme {attempt + 1}/{max_retries}) Hata: {e}")
-                    time.sleep(2)
-                else:
-                    with counter_lock:
-                        processed_products += 1
-                        for variant in variants:
-                            failed_count += 1
-                            details.append({
-                                "status": "failed",
-                                "variant_id": variant["id"],
-                                "sku": variant.get("sku"),
-                                "price": variant["price"],
-                                "reason": str(e)
+                        
+                        # Progress update
+                        if progress_callback and processed_count % 50 == 0:
+                            elapsed = time.time() - start_time
+                            rate = processed_count / elapsed if elapsed > 0 else 0
+                            eta = (total - processed_count) / rate if rate > 0 else 0
+                            progress = 25 + int((processed_count / total) * 70)  # 25-95% arası
+                            
+                            progress_callback({
+                                'progress': progress,
+                                'message': f'⚡ Güncelleme: {processed_count}/{total} (✅ {success_count} / ❌ {failed_count}) - {rate:.1f}/s',
+                                'log_detail': f"<div style='color:#4CAF50'>✅ {processed_count}/{total} işlendi - Hız: {rate:.1f} varyant/saniye - Tahmini: {eta/60:.1f} dk</div>",
+                                'stats': {'rate': rate, 'eta': eta / 60}
                             })
-                        errors.append(str(e))
+                        
+                        return {
+                            "status": "success",
+                            "variant_id": variant_gid,
+                            "sku": sku,
+                            "price": update_data.get("price"),
+                            "reason": "Başarıyla güncellendi."
+                        }
+                    else:
+                        raise Exception("API yanıt vermedi")
+                        
+            except Exception as e:
+                error_str = str(e)
+                
+                # Rate limit kontrolü
+                if "429" in error_str or "Too Many Requests" in error_str or "throttle" in error_str.lower():
+                    with counter_lock:
+                        rate_limit_hits += 1
+                    
+                    if attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) + random.uniform(0, 2)  # Üstel geri çekilme
+                        logging.warning(f"Rate limit! SKU {sku} için {wait_time:.1f}s bekleniyor...")
+                        time.sleep(wait_time)
+                        continue
+                
+                # Son deneme başarısız
+                if attempt == max_retries - 1:
+                    with counter_lock:
+                        failed_count += 1
+                        if processed_count % 50 == 0 and progress_callback:
+                            progress_callback({
+                                'log_detail': f"<div style='color:#f44336'>❌ Hata: SKU {sku} - {error_str[:50]}</div>"
+                            })
+                    
+                    return {
+                        "status": "failed",
+                        "variant_id": variant_gid,
+                        "sku": sku,
+                        "price": update_data.get("price"),
+                        "reason": f"Hata: {error_str[:100]}"
+                    }
+                
+                # Tekrar dene
+                time.sleep(1)
     
-    logging.info(f"🚀 {total_products} ürün için {max_workers} worker ile GraphQL güncelleme başlatılıyor...")
+    logging.info(f"🚀 {total} varyant için {worker_count} worker ile paralel güncelleme başlatılıyor...")
     
     if progress_callback:
         progress_callback({
-            'progress': 5,
-            'message': f'🚀 {total_products} ürün için hızlı güncelleme başlatılıyor...'
+            'progress': 25,
+            'message': f'🚀 {worker_count} paralel işlem başlatılıyor...'
         })
     
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(update_product_variants, product_id, variants)
-            for product_id, variants in product_variants_map.items()
-        ]
+    # ThreadPoolExecutor ile paralel işlem
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        # Görevleri başlat
+        futures = []
+        for i, update in enumerate(price_updates):
+            # İlk worker'ları yavaş başlat
+            if i < worker_count * 2:
+                time.sleep(0.05)
+            future = executor.submit(update_single_variant_with_retry, update)
+            futures.append((future, update))
         
-        for future in as_completed(futures):
+        # Sonuçları topla
+        for future, update in futures:
             try:
-                future.result(timeout=60)
+                result = future.result(timeout=30)
+                details.append(result)
+                if result["status"] == "failed":
+                    errors.append(result["reason"])
             except Exception as e:
-                logging.error(f"Worker hatası: {e}")
+                logging.error(f"Worker hatası - SKU {update.get('sku')}: {e}")
+                details.append({
+                    "status": "failed",
+                    "variant_id": update.get("id"),
+                    "sku": update.get("sku"),
+                    "price": update.get("price"),
+                    "reason": f"Worker timeout: {str(e)[:50]}"
+                })
+                with counter_lock:
+                    failed_count += 1
     
+    # Final update
+    elapsed = time.time() - start_time
     if progress_callback:
         progress_callback({
             'progress': 100,
-            'message': f'✅ Tamamlandı! Başarılı: {success_count}, Başarısız: {failed_count}'
+            'message': f'✅ Tamamlandı! Başarılı: {success_count}, Başarısız: {failed_count} ({elapsed:.1f} saniye)',
+            'log_detail': f"<div style='color:#4CAF50;font-weight:bold'>🎉 İşlem tamamlandı! Süre: {elapsed:.1f}s, Ortalama hız: {total/elapsed:.1f} varyant/saniye</div>"
         })
     
-    logging.info(f"🎉 GraphQL güncelleme tamamlandı. Başarılı: {success_count}, Başarısız: {failed_count}")
+    logging.info(f"🎉 Paralel güncelleme tamamlandı. Süre: {elapsed:.1f}s, Başarılı: {success_count}, Başarısız: {failed_count}")
     
     return {
         "success": success_count,
@@ -252,84 +265,80 @@ def _update_variants_by_product(shopify_api, product_variants_map, progress_call
     }
 
 
-def _update_prices_individually(shopify_api, price_updates: list, progress_callback=None):
-    """Fiyatları tek tek REST API ile günceller (fallback metodu)."""
-    success_count, failed_count, errors, total = 0, 0, [], len(price_updates)
+def _update_prices_sequentially(shopify_api, price_updates: list, progress_callback=None, max_retries=3):
+    """Fiyatları sırayla günceller (tek worker için)"""
+    success_count = 0
+    failed_count = 0
+    errors = []
     details = []
+    total = len(price_updates)
     
     for i, update in enumerate(price_updates):
-        log_message = f"Varyant {i+1}/{total} ({update.get('sku')}): Fiyat {update.get('price')} olarak güncelleniyor..."
-        if progress_callback:
-            progress = int((i / total) * 100)
+        if progress_callback and i % 25 == 0:
+            progress = 25 + int((i / total) * 70)
             progress_callback({
-                'progress': progress, 
-                'message': f'Tek tek güncelleniyor: {i+1}/{total}', 
-                'log_detail': log_message
+                'progress': progress,
+                'message': f'Güncelleniyor: {i}/{total} (✅ {success_count} / ❌ {failed_count})'
             })
         
-        variant_gid = update.get("id") or update.get("variant_id")
+        variant_gid = update.get("id")
+        sku = update.get("sku", "Unknown")
         
-        try:
-            # REST API üzerinden güncelleme
-            variant_id_numeric = variant_gid.split("/")[-1]
-            endpoint = f"variants/{variant_id_numeric}.json"
-            
-            variant_data = {
-                "variant": {
-                    "id": variant_id_numeric,
-                    "price": str(update.get("price"))
+        for attempt in range(max_retries):
+            try:
+                variant_id_numeric = variant_gid.split("/")[-1]
+                endpoint = f"variants/{variant_id_numeric}.json"
+                
+                variant_data = {
+                    "variant": {
+                        "id": variant_id_numeric,
+                        "price": str(update.get("price"))
+                    }
                 }
-            }
-            
-            if "compareAtPrice" in update and update["compareAtPrice"] is not None:
-                variant_data["variant"]["compare_at_price"] = str(update["compareAtPrice"])
-            
-            response = shopify_api._make_request("PUT", endpoint, data=variant_data)
-            
-            if response and "variant" in response:
-                success_count += 1
-                log_message = f"✅ BAŞARILI: Varyant {update.get('sku')} için fiyat başarıyla güncellendi (REST API)."
-                details.append({
-                    "status": "success",
-                    "variant_id": variant_gid,
-                    "sku": update.get("sku"),
-                    "price": update.get("price"),
-                    "reason": "Başarıyla güncellendi (REST)."
-                })
-                if progress_callback:
-                    progress_callback({'log_detail': log_message})
-                logging.info(log_message)
-            else:
+                
+                if "compareAtPrice" in update:
+                    variant_data["variant"]["compare_at_price"] = str(update["compareAtPrice"])
+                
+                response = shopify_api._make_request("PUT", endpoint, data=variant_data)
+                
+                if response and "variant" in response:
+                    success_count += 1
+                    details.append({
+                        "status": "success",
+                        "variant_id": variant_gid,
+                        "sku": sku,
+                        "price": update.get("price"),
+                        "reason": "Başarıyla güncellendi."
+                    })
+                    break
+                else:
+                    raise Exception("API yanıt vermedi")
+                    
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                    
                 failed_count += 1
-                error_message = "REST API yanıt vermedi veya bilinmeyen hata oluştu."
-                log_message = f"❌ HATA: Varyant {update.get('sku')} için fiyat güncellenemedi. Neden: {error_message}"
+                error_msg = str(e)[:100]
+                errors.append(error_msg)
                 details.append({
                     "status": "failed",
                     "variant_id": variant_gid,
-                    "sku": update.get("sku"),
+                    "sku": sku,
                     "price": update.get("price"),
-                    "reason": error_message
+                    "reason": error_msg
                 })
-                if progress_callback:
-                    progress_callback({'log_detail': log_message})
-                logging.error(log_message)
-                
-        except Exception as e:
-            failed_count += 1
-            log_message = f"❌ KRİTİK HATA: Varyant {update.get('sku')} REST API sorgusu başarısız oldu. Hata: {e}"
-            errors.append(str(e))
-            details.append({
-                "status": "failed",
-                "variant_id": variant_gid,
-                "sku": update.get("sku"),
-                "price": update.get("price"),
-                "reason": str(e)
-            })
-            if progress_callback:
-                progress_callback({'log_detail': log_message})
-            logging.error(log_message)
     
     if progress_callback:
-        progress_callback({'progress': 100, 'message': 'İşlem tamamlandı!'})
+        progress_callback({
+            'progress': 100,
+            'message': f'✅ Tamamlandı! Başarılı: {success_count}, Başarısız: {failed_count}'
+        })
     
-    return {"success": success_count, "failed": failed_count, "errors": errors, "details": details}
+    return {
+        "success": success_count,
+        "failed": failed_count,
+        "errors": errors,
+        "details": details
+    }
