@@ -229,13 +229,13 @@ def _update_variants_by_product(shopify_api, product_variants_map, progress_call
                 errors.append(str(e))
     
     # GraphQL mutation'ları için 5 worker yeterli (REST'ten daha hızlı)
-    max_workers = 10(10, total_products)
+    max_workers = min(5, total_products)
     
     logging.info(f"🚀 {total_products} ürün için {max_workers} worker ile GraphQL güncelleme başlatılıyor...")
     
     if progress_callback:
         progress_callback({
-            'progress': 10,
+            'progress': 5,
             'message': f'🚀 {total_products} ürün için hızlı güncelleme başlatılıyor...'
         })
     
