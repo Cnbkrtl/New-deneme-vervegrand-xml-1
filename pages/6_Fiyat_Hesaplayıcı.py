@@ -104,15 +104,18 @@ st.session_state.setdefault('sync_log_list', [])
 st.session_state.setdefault('update_in_progress', False)
 st.session_state.setdefault('sync_results', None)
 st.session_state.setdefault('last_failed_skus', [])
-st.session_state.setdefault('last_update_results', {})  # Boş dict olarak başlat
+st.session_state.setdefault('last_update_results', {})
 
 # --- Shopify Güncelleme İşlemi ---
 def _run_price_sync(update_choice, continue_from_last, worker_count, batch_size, retry_count, queue):
     """Fiyat senkronizasyonunu arka planda çalıştıran fonksiyon."""
     try:
+        if not st.session_state.get('shopify_store') or not st.session_state.get('shopify_token'):
+            queue.put({"status": "error", "message": "Shopify API bilgileri eksik. Lütfen ana sayfadan giriş yapın veya ayarları kontrol edin."})
+            return
+
         shopify_api = ShopifyAPI(st.session_state.shopify_store, st.session_state.shopify_token)
         
-        # Hangi fiyatları güncelleyeceğimizi belirle
         if update_choice == "Ana Fiyatlar":
             calculated_data_df = st.session_state.calculated_df
             price_col = 'NIHAI_SATIS_FIYATI'
@@ -122,13 +125,11 @@ def _run_price_sync(update_choice, continue_from_last, worker_count, batch_size,
             price_col = 'İNDİRİMLİ SATIŞ FİYATI'
             compare_col = 'NIHAI_SATIS_FIYATI'
         
-        # Devam et modunda sadece başarısız olanları güncelle
         variants_to_update = st.session_state.df_variants.copy()
         if continue_from_last and st.session_state.last_failed_skus:
             failed_skus = st.session_state.last_failed_skus
             variants_to_update = variants_to_update[variants_to_update['MODEL KODU'].isin(failed_skus)]
         
-        # Batch işleme
         total_variants = len(variants_to_update)
         all_results = {"success": 0, "failed": 0, "errors": [], "details": []}
         
@@ -325,25 +326,36 @@ if st.session_state.calculated_df is not None:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True, disabled=st.session_state.update_in_progress):
-            with st.spinner("Veriler Google E-Tablolar'a kaydediliyor..."):
-                main_df = st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', 'NIHAI_SATIS_FIYATI']]
-                discount_df = st.session_state.retail_df[['MODEL KODU', 'ÜRÜN ADI', 'İNDİRİMLİ SATIŞ FİYATI']]
-                wholesale_df = wholesale_df[['MODEL KODU', 'ÜRÜN ADI', "TOPTAN FİYAT (KDV'li)"]]
-                
-                success, url = save_pricing_data_to_gsheets(
-                    main_df, 
-                    discount_df, 
-                    wholesale_df, 
-                    st.session_state.df_variants
-                )
-                
-            if success: 
-                variant_info = ""
-                if st.session_state.df_variants is not None and not st.session_state.df_variants.empty:
-                    variant_info = f" ({len(st.session_state.df_variants)} varyant dahil)"
-                st.success(f"Veriler başarıyla kaydedildi{variant_info}! [E-Tabloyu Görüntüle]({url})")
+            if st.session_state.df_variants is None or st.session_state.df_variants.empty:
+                st.error("❌ HATA: Hafızada varyant verisi bulunamadı!")
+                st.info("💡 Çözüm önerileri:")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.write("1️⃣ Sentos'tan veri çekin (önerilen)")
+                    st.write("2️⃣ Google Sheets'ten veri yükleyin")
+                with col_b:
+                    st.write("3️⃣ Varyantların kaydedildiğinden emin olun")
+                    st.write("4️⃣ Sayfayı yenileyin ve tekrar deneyin")
             else:
-                st.error("Kaydetme sırasında hata oluştu.")
+                with st.spinner("Veriler Google E-Tablolar'a kaydediliyor..."):
+                    main_df = st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', 'NIHAI_SATIS_FIYATI']]
+                    discount_df = st.session_state.retail_df[['MODEL KODU', 'ÜRÜN ADI', 'İNDİRİMLİ SATIŞ FİYATI']]
+                    wholesale_df = wholesale_df[['MODEL KODU', 'ÜRÜN ADI', "TOPTAN FİYAT (KDV'li)"]]
+                    
+                    success, url = save_pricing_data_to_gsheets(
+                        main_df, 
+                        discount_df, 
+                        wholesale_df, 
+                        st.session_state.df_variants
+                    )
+                    
+                if success: 
+                    variant_info = ""
+                    if st.session_state.df_variants is not None and not st.session_state.df_variants.empty:
+                        variant_info = f" ({len(st.session_state.df_variants)} varyant dahil)"
+                    st.success(f"Veriler başarıyla kaydedildi{variant_info}! [E-Tabloyu Görüntüle]({url})")
+                else:
+                    st.error("Kaydetme sırasında hata oluştu.")
     
     with col2:
         with st.expander("⚙️ Güncelleme Ayarları", expanded=False):
@@ -384,7 +396,6 @@ if st.session_state.calculated_df is not None:
         
         update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
         
-        # Devam et modunda önceki sonuçları göster
         if continue_from_last and 'last_update_results' in st.session_state and not st.session_state.update_in_progress:
             last_results = st.session_state.last_update_results
             if last_results and isinstance(last_results, dict):
@@ -399,26 +410,22 @@ if st.session_state.calculated_df is not None:
             if st.session_state.df_variants is None or st.session_state.df_variants.empty:
                 st.error("❌ HATA: Hafızada varyant verisi bulunamadı!")
                 st.info("💡 Çözüm önerileri:")
-                col_a, col_b = st.columns(2)
-                with col_a:
-                    st.write("1️⃣ **Sentos'tan veri çekin** (önerilen)")
-                    st.write("2️⃣ **Google Sheets'ten veri yükleyin**")
-                with col_b:
-                    st.write("3️⃣ Varyantların kaydedildiğinden emin olun")
-                    st.write("4️⃣ Sayfayı yenileyin ve tekrar deneyin")
-                st.stop()
-            
-            st.session_state.update_in_progress = True
-            st.session_state.sync_log_list = []
-            st.session_state.sync_results = None
-            
-            thread = threading.Thread(
-                target=_run_price_sync,
-                args=(update_choice, continue_from_last, worker_count, batch_size, retry_count, st.session_state.sync_progress_queue),
-                daemon=True
-            )
-            thread.start()
-            st.rerun()
+                st.write("- Sentos'tan veri çekin (önerilen)")
+                st.write("- Google Sheets'ten veri yükleyin")
+                st.write("- Varyantların kaydedildiğinden emin olun")
+                st.write("- Sayfayı yenileyin ve tekrar deneyin")
+            else:
+                st.session_state.update_in_progress = True
+                st.session_state.sync_log_list = []
+                st.session_state.sync_results = None
+                
+                thread = threading.Thread(
+                    target=_run_price_sync,
+                    args=(update_choice, continue_from_last, worker_count, batch_size, retry_count, st.session_state.sync_progress_queue),
+                    daemon=True
+                )
+                thread.start()
+                st.rerun()
 
 # Eğer bir işlem devam ediyorsa, ilerlemeyi gösteren alanı oluştur
 if st.session_state.update_in_progress:
