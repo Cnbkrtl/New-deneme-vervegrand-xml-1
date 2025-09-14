@@ -14,9 +14,11 @@ import time
 import logging
 import traceback
 
-# Doğrudan içe aktarma için dosya yolunu ekle
-# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-# Bu satırı kaldırın, artık gerekli değil ve bazen sorunlara yol açabiliyor.
+# Logging ayarları
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 # gsheets_manager.py'den gerekli fonksiyonları içe aktar
 from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to_gsheets
@@ -83,8 +85,10 @@ def process_sentos_data(product_list):
 
 def apply_rounding(price, method):
     if method == "Yukarı Yuvarla":
-        if price % 10 != 9.99 and price % 10 != 9: return math.floor(price / 10) * 10 + 9.99
-        elif price % 1 == 0: return price - 0.01
+        if price % 10 != 9.99 and price % 10 != 9: 
+            return math.floor(price / 10) * 10 + 9.99
+        elif price % 1 == 0: 
+            return price - 0.01
         return price
     elif method == "Aşağı Yuvarla":
         return math.floor(price / 10) * 10 - 0.01 if price > 10 else 9.99
@@ -100,8 +104,7 @@ st.session_state.setdefault('sync_log_list', [])
 st.session_state.setdefault('update_in_progress', False)
 st.session_state.setdefault('sync_results', None)
 st.session_state.setdefault('last_failed_skus', [])
-st.session_state.setdefault('last_update_results', None)
-
+st.session_state.setdefault('last_update_results', {})  # Boş dict olarak başlat
 
 # --- Shopify Güncelleme İşlemi ---
 def _run_price_sync(update_choice, continue_from_last, worker_count, batch_size, retry_count, queue):
@@ -125,7 +128,7 @@ def _run_price_sync(update_choice, continue_from_last, worker_count, batch_size,
             failed_skus = st.session_state.last_failed_skus
             variants_to_update = variants_to_update[variants_to_update['MODEL KODU'].isin(failed_skus)]
         
-        # Batch işleme - İyileştirilmiş
+        # Batch işleme
         total_variants = len(variants_to_update)
         all_results = {"success": 0, "failed": 0, "errors": [], "details": []}
         
@@ -137,7 +140,6 @@ def _run_price_sync(update_choice, continue_from_last, worker_count, batch_size,
             batch_end = min(batch_start + actual_batch_size, total_variants)
             batch_variants = variants_to_update.iloc[batch_start:batch_end]
             
-            # Batch progress callback wrapper
             def batch_progress_callback(data):
                 queue.put(data)
             
@@ -166,7 +168,6 @@ def _run_price_sync(update_choice, continue_from_last, worker_count, batch_size,
                 logging.error(error_message + "\n" + traceback.format_exc())
                 all_results["errors"].append(error_message)
                 
-        # Sonuçları Streamlit'in ana akışına gönder
         queue.put({"status": "done", "results": all_results})
 
     except Exception as e:
@@ -195,7 +196,12 @@ if st.session_state.df_for_display is None:
                 message = update.get('message', 'Veriler işleniyor...')
                 progress_bar.progress(progress / 100.0, text=message)
             try:
-                sentos_api = SentosAPI(st.session_state.sentos_api_url, st.session_state.sentos_api_key, st.session_state.sentos_api_secret, st.session_state.sentos_cookie)
+                sentos_api = SentosAPI(
+                    st.session_state.sentos_api_url, 
+                    st.session_state.sentos_api_key, 
+                    st.session_state.sentos_api_secret, 
+                    st.session_state.sentos_cookie
+                )
                 all_products = sentos_api.get_all_products(progress_callback=progress_callback)
                 progress_bar.progress(100, text="Veriler işleniyor ve gruplanıyor...")
                 if not all_products:
@@ -221,7 +227,12 @@ if st.session_state.df_for_display is None:
                 st.session_state.calculated_df = main_df
                 st.session_state.df_for_display = main_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI']]
                 st.session_state.df_variants = variants_df
-                st.toast("Veriler Google E-Tablolar'dan yüklendi.")
+                
+                variant_msg = ""
+                if variants_df is not None and not variants_df.empty:
+                    variant_msg = f" ve {len(variants_df)} varyant"
+                
+                st.toast(f"Veriler Google E-Tablolar'dan yüklendi{variant_msg}.")
                 st.rerun()
             else:
                 st.warning("Google E-Tablolar'dan veri yüklenemedi veya dosya boş.")
@@ -238,10 +249,12 @@ else:
         st.session_state.df_for_display = None
         st.session_state.df_variants = None
         st.session_state.sync_log_list = []
+        st.session_state.last_update_results = {}
         st.rerun()
 
 if st.session_state.df_for_display is not None and not st.session_state.update_in_progress:
-    st.markdown("---"); st.subheader("Adım 2: Fiyatlandırma Kurallarını Uygula")
+    st.markdown("---")
+    st.subheader("Adım 2: Fiyatlandırma Kurallarını Uygula")
     with st.container(border=True):
         c1, c2, c3, c4 = st.columns([2, 2, 2, 2])
         markup_type = c1.radio("Kâr Marjı Tipi", ["Yüzde Ekle (%)", "Çarpan Kullan (x)"], key="markup_type")
@@ -263,15 +276,18 @@ if st.session_state.df_for_display is not None and not st.session_state.update_i
             st.rerun()
 
 if st.session_state.calculated_df is not None:
-    st.markdown("---"); st.subheader("Adım 3: Senaryoları Analiz Et")
+    st.markdown("---")
+    st.subheader("Adım 3: Senaryoları Analiz Et")
     df = st.session_state.calculated_df
     vat_rate = st.session_state.get('vat_rate', 10)
+    
     with st.expander("Tablo 1: Ana Fiyat ve Kârlılık Listesi (Referans)", expanded=True):
         main_df_display = df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', 'SATIS_FIYATI_KDVSIZ', 'NIHAI_SATIS_FIYATI', 'KÂR', 'KÂR ORANI (%)']]
         st.dataframe(main_df_display.style.format({
             'ALIŞ FİYATI': '{:,.2f} ₺', 'SATIS_FIYATI_KDVSIZ': '{:,.2f} ₺', 'NIHAI_SATIS_FIYATI': '{:,.2f} ₺',
             'KÂR': '{:,.2f} ₺', 'KÂR ORANI (%)': '{:.2f}%'
         }), use_container_width=True)
+    
     with st.expander("Tablo 2: Perakende İndirim Analizi", expanded=True):
         retail_discount = st.slider("İndirim Oranı (%)", 0, 50, 10, 5, key="retail_slider")
         retail_df = df.copy()
@@ -280,12 +296,13 @@ if st.session_state.calculated_df is not None:
         revenue_after_discount = retail_df['İNDİRİMLİ SATIŞ FİYATI'] / (1 + vat_rate / 100)
         retail_df['İNDİRİM SONRASI KÂR'] = revenue_after_discount - retail_df['ALIŞ FİYATI']
         retail_df['İNDİRİM SONRASI KÂR ORANI (%)'] = np.divide(retail_df['İNDİRİM SONRASI KÂR'], retail_df['ALIŞ FİYATI'], out=np.zeros_like(retail_df['İNDİRİM SONRASI KÂR']), where=retail_df['ALIŞ FİYATI']!=0) * 100
-        st.session_state.retail_df = retail_df # Retail DF'i session state'e kaydet
+        st.session_state.retail_df = retail_df
         discount_df_display = retail_df[['MODEL KODU', 'ÜRÜN ADI', 'NIHAI_SATIS_FIYATI', 'İNDİRİM ORANI (%)', 'İNDİRİMLİ SATIŞ FİYATI', 'İNDİRİM SONRASI KÂR', 'İNDİRİM SONRASI KÂR ORANI (%)']]
         st.dataframe(discount_df_display.style.format({
             'NIHAI_SATIS_FIYATI': '{:,.2f} ₺', 'İNDİRİM ORANI (%)': '{:.0f}%', 'İNDİRİMLİ SATIŞ FİYATI': '{:,.2f} ₺',
             'İNDİRİM SONRASI KÂR': '{:,.2f} ₺', 'İNDİRİM SONRASI KÂR ORANI (%)': '{:.2f}%'
         }), use_container_width=True)
+    
     with st.expander("Tablo 3: Toptan Satış Fiyat Analizi", expanded=True):
         wholesale_method = st.radio("Toptan Fiyat Yöntemi", ('Çarpanla', 'İndirimle'), horizontal=True, key="ws_method")
         wholesale_df = df.copy()
@@ -308,19 +325,27 @@ if st.session_state.calculated_df is not None:
     col1, col2 = st.columns(2)
     with col1:
         if st.button("💾 Fiyatları Google E-Tablolar'a Kaydet", use_container_width=True, disabled=st.session_state.update_in_progress):
-            if st.session_state.df_variants is None or st.session_state.df_variants.empty:
-                st.error("HATA: Hafızada varyant verisi bulunamadı. Lütfen önce Sentos'tan veri çekin.")
-                st.stop()
             with st.spinner("Veriler Google E-Tablolar'a kaydediliyor..."):
                 main_df = st.session_state.calculated_df[['MODEL KODU', 'ÜRÜN ADI', 'ALIŞ FİYATI', 'NIHAI_SATIS_FIYATI']]
                 discount_df = st.session_state.retail_df[['MODEL KODU', 'ÜRÜN ADI', 'İNDİRİMLİ SATIŞ FİYATI']]
                 wholesale_df = wholesale_df[['MODEL KODU', 'ÜRÜN ADI', "TOPTAN FİYAT (KDV'li)"]]
-                success, url = save_pricing_data_to_gsheets(main_df, discount_df, wholesale_df, st.session_state.df_variants)
+                
+                success, url = save_pricing_data_to_gsheets(
+                    main_df, 
+                    discount_df, 
+                    wholesale_df, 
+                    st.session_state.df_variants
+                )
+                
             if success: 
-                st.success(f"Veriler başarıyla kaydedildi! [E-Tabloyu Görüntüle]({url})")
+                variant_info = ""
+                if st.session_state.df_variants is not None and not st.session_state.df_variants.empty:
+                    variant_info = f" ({len(st.session_state.df_variants)} varyant dahil)"
+                st.success(f"Veriler başarıyla kaydedildi{variant_info}! [E-Tabloyu Görüntüle]({url})")
+            else:
+                st.error("Kaydetme sırasında hata oluştu.")
     
     with col2:
-        # Shopify güncelleme ayarları
         with st.expander("⚙️ Güncelleme Ayarları", expanded=False):
             col_a, col_b = st.columns(2)
             
@@ -329,7 +354,7 @@ if st.session_state.calculated_df is not None:
                     "🔧 Paralel Worker Sayısı",
                     min_value=1,
                     max_value=15,
-                    value=10,
+                    value=5,
                     help="Daha fazla worker = daha hızlı güncelleme. Ancak çok fazla worker rate limit'e takılabilir."
                 )
                 
@@ -339,7 +364,7 @@ if st.session_state.calculated_df is not None:
                     max_value=10000,
                     value=1000,
                     step=100,
-                    help="Tek seferde kaç varyant güncellensin? Büyük batch'ler için daha fazla bellek gerekir."
+                    help="Tek seferde kaç varyant güncellensin?"
                 )
             
             with col_b:
@@ -362,24 +387,31 @@ if st.session_state.calculated_df is not None:
         # Devam et modunda önceki sonuçları göster
         if continue_from_last and 'last_update_results' in st.session_state and not st.session_state.update_in_progress:
             last_results = st.session_state.last_update_results
-            st.info(f"""
-            📊 Önceki güncelleme sonucu:
-            - ✅ Başarılı: {last_results.get('success', 0)}
-            - ❌ Başarısız: {last_results.get('failed', 0)}
-            - 🔄 Tekrar denenecek: {last_results.get('failed', 0)} varyant
-            """)
+            if last_results and isinstance(last_results, dict):
+                st.info(f"""
+                📊 Önceki güncelleme sonucu:
+                - ✅ Başarılı: {last_results.get('success', 0)}
+                - ❌ Başarısız: {last_results.get('failed', 0)}
+                - 🔄 Tekrar denenecek: {last_results.get('failed', 0)} varyant
+                """)
         
         if st.button(f"🚀 {update_choice} Shopify'a Gönder", use_container_width=True, type="primary", disabled=st.session_state.update_in_progress):
             if st.session_state.df_variants is None or st.session_state.df_variants.empty:
-                st.error("HATA: Hafızada varyant verisi bulunamadı. Lütfen önce Sentos'tan veri çekin.")
+                st.error("❌ HATA: Hafızada varyant verisi bulunamadı!")
+                st.info("💡 Çözüm önerileri:")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    st.write("1️⃣ **Sentos'tan veri çekin** (önerilen)")
+                    st.write("2️⃣ **Google Sheets'ten veri yükleyin**")
+                with col_b:
+                    st.write("3️⃣ Varyantların kaydedildiğinden emin olun")
+                    st.write("4️⃣ Sayfayı yenileyin ve tekrar deneyin")
                 st.stop()
             
-            # Güncelleme işlemini başlat ve bayrağı ayarla
             st.session_state.update_in_progress = True
             st.session_state.sync_log_list = []
             st.session_state.sync_results = None
             
-            # İşlemi ayrı bir thread'de başlat
             thread = threading.Thread(
                 target=_run_price_sync,
                 args=(update_choice, continue_from_last, worker_count, batch_size, retry_count, st.session_state.sync_progress_queue),
@@ -407,7 +439,6 @@ if st.session_state.update_in_progress:
     with log_container:
         log_placeholder = st.empty()
     
-    # Kuyruğu kontrol eden ana döngü
     while st.session_state.update_in_progress:
         try:
             update_data = st.session_state.sync_progress_queue.get(timeout=1)
@@ -421,7 +452,7 @@ if st.session_state.update_in_progress:
                 stats = update_data['stats']
                 speed_metric.metric("Hız", f"{stats.get('rate', 0):.1f} varyant/sn")
                 eta_metric.metric("Tahmini Süre", f"{stats.get('eta', 0):.1f} dakika")
-                status_metric.metric("İşlem", f"%{update_data.get('progress')}")
+                status_metric.metric("İşlem", f"%{update_data.get('progress', 0)}")
                 
             if "log_detail" in update_data:
                 st.session_state.sync_log_list.insert(0, f"<div>{update_data['log_detail']}</div>")
@@ -437,14 +468,14 @@ if st.session_state.update_in_progress:
                 failed_details = [d for d in st.session_state.sync_results.get("details", []) if d.get("status") == "failed"]
                 st.session_state.last_failed_skus = [d.get("sku") for d in failed_details if d.get("sku")]
                 st.session_state.update_in_progress = False
-                st.rerun() # İşlem tamamlandığında sayfayı yeniden yükle
+                st.rerun()
             
             if update_data.get("status") == "error":
                 st.error("Güncelleme sırasında bir hata oluştu: " + update_data.get("message", "Bilinmeyen Hata"))
                 st.session_state.update_in_progress = False
                 st.rerun()
             
-            st.empty() # Streamlit'in UI'ını yenilemesi için küçük bir bekleme ve boş bir element
+            st.empty()
             
         except queue.Empty:
             time.sleep(0.5)
@@ -501,7 +532,11 @@ if st.session_state.sync_results:
             with tab1:
                 success_df = report_df[report_df['status'] == 'success']
                 if not success_df.empty:
-                    st.dataframe(success_df[['sku', 'price']].head(200), use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        success_df[['sku', 'price']].head(200), 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
             
             with tab2:
                 failed_df = report_df[report_df['status'] == 'failed']
@@ -511,4 +546,8 @@ if st.session_state.sync_results:
                     st.bar_chart(error_summary)
                     
                     st.markdown("#### Başarısız Varyantlar")
-                    st.dataframe(failed_df[['sku', 'price', 'reason']].head(200), use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        failed_df[['sku', 'price', 'reason']].head(200), 
+                        use_container_width=True, 
+                        hide_index=True
+                    )
