@@ -36,6 +36,46 @@ def load_css():
     except FileNotFoundError:
         pass
 
+# YENİ: Oturum durumu için başlangıç değerlerini ayarlayan fonksiyon
+def initialize_session_state_defaults():
+    defaults = {
+        'authentication_status': None, 'shopify_status': 'pending', 'sentos_status': 'pending',
+        'shopify_data': {}, 'sentos_data': {}, 'user_data_loaded_for': None,
+        'price_df': None, 'calculated_df': None,
+        'shopify_store': None, 'shopify_token': None,
+        'sentos_api_url': None, 'sentos_api_key': None, 'sentos_api_secret': None, 'sentos_cookie': None,
+        'update_in_progress': False,
+        'sync_progress_queue': queue.Queue()
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+# YENİ: Kullanıcıya özel sırları ve verileri yükler
+def load_and_verify_user_data(username):
+    if st.session_state.get('user_data_loaded_for') == username:
+        return
+    user_keys = load_all_user_keys(username)
+    st.session_state.update(user_keys)
+    user_price_data = load_user_data(username)
+    try:
+        if price_df_json := user_price_data.get('price_df_json'):
+            st.session_state.price_df = pd.read_json(StringIO(price_df_json), orient='split')
+        if calculated_df_json := user_price_data.get('calculated_df_json'):
+            st.session_state.calculated_df = pd.read_json(StringIO(calculated_df_json), orient='split')
+    except Exception:
+        st.session_state.price_df, st.session_state.calculated_df = None, None
+    st.session_state['user_data_loaded_for'] = username
+
+# Ana sayfa mantığını sayfaya taşıma
+if not st.session_state.get("authentication_status"):
+    st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
+    st.stop()
+
+# API bilgilerinin oturumda olduğundan emin ol
+if st.session_state.get('user_data_loaded_for') != st.session_state.get('username'):
+    load_and_verify_user_data(st.session_state.get('username'))    
+
 if not st.session_state.get("authentication_status"):
     st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
     st.stop()
