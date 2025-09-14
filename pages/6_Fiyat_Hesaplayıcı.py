@@ -25,6 +25,8 @@ from gsheets_manager import load_pricing_data_from_gsheets, save_pricing_data_to
 from connectors.shopify_api import ShopifyAPI
 from connectors.sentos_api import SentosAPI
 from operations.price_sync import send_prices_to_shopify
+from data_manager import load_user_data
+from config_manager import load_all_user_keys
 
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():
