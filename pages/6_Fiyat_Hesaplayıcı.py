@@ -12,6 +12,7 @@ import queue
 import threading
 import time
 import logging
+import traceback
 
 # Doğrudan içe aktarma için dosya yolunu ekle
 # sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -23,18 +24,6 @@ from connectors.shopify_api import ShopifyAPI
 from connectors.sentos_api import SentosAPI
 from operations.price_sync import send_prices_to_shopify
 
-# YENİ: Eğer oturum durumu başlatılmamışsa, kullanıcıyı ana sayfaya yönlendir
-if not st.session_state.get('authentication_status'):
-    st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
-    st.stop()
-    
-# YENİ: Gerekli API anahtarlarının oturum durumunda olup olmadığını kontrol et
-required_keys = ['shopify_store', 'shopify_token', 'sentos_api_url', 'sentos_api_key', 'sentos_api_secret', 'sentos_cookie']
-if not all(st.session_state.get(key) for key in required_keys):
-    st.warning("API bağlantı bilgileri eksik. Lütfen ana sayfadan giriş yaparak veya ayarlarınızı tamamlayarak verilerin yüklenmesini sağlayın.")
-    st.stop()
-
-
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():
     try:
@@ -43,11 +32,13 @@ def load_css():
     except FileNotFoundError:
         pass
 
+if not st.session_state.get("authentication_status"):
+    st.error("Lütfen bu sayfaya erişmek için giriş yapın.")
+    st.stop()
 
 load_css()
 
 # --- YARDIMCI FONKSİYONLAR ---
-# ... (process_sentos_data ve apply_rounding fonksiyonları aynı kalacak) ...
 def process_sentos_data(product_list):
     all_variants_rows = []
     main_products_rows = []
@@ -110,6 +101,7 @@ st.session_state.setdefault('update_in_progress', False)
 st.session_state.setdefault('sync_results', None)
 st.session_state.setdefault('last_failed_skus', [])
 st.session_state.setdefault('last_update_results', None)
+
 
 # --- Shopify Güncelleme İşlemi ---
 def _run_price_sync(update_choice, continue_from_last, worker_count, batch_size, retry_count, queue):
