@@ -1,9 +1,10 @@
-# connectors/shopify_api.py
+# connectors/shopify_api.py (Rate Limit Geliştirilmiş)
 
 import requests
 import time
 import json
 import logging
+from datetime import datetime, timedelta
 
 class ShopifyAPI:
     """Shopify Admin API ile iletişimi yöneten sınıf."""
@@ -21,13 +22,50 @@ class ShopifyAPI:
         }
         self.product_cache = {}
         self.location_id = None
+        
+        # Rate limiting için
+        self.last_request_time = 0
+        self.min_request_interval = 0.6  # 600ms minimum bekleme
+        self.request_count = 0
+        self.window_start = time.time()
+        self.max_requests_per_minute = 40  # Dakikada max 40 istek
+
+    def _rate_limit_wait(self):
+        """Rate limit koruması - her API çağrısından önce çağrılır"""
+        current_time = time.time()
+        
+        # Dakikalık pencere kontrolü
+        if current_time - self.window_start >= 60:
+            self.request_count = 0
+            self.window_start = current_time
+        
+        # Dakikalık limit kontrolü
+        if self.request_count >= self.max_requests_per_minute:
+            wait_time = 60 - (current_time - self.window_start)
+            if wait_time > 0:
+                logging.warning(f"Dakikalık rate limit aşıldı, {wait_time:.1f}s bekleniyor...")
+                time.sleep(wait_time)
+                self.request_count = 0
+                self.window_start = time.time()
+        
+        # Minimum interval kontrolü
+        elapsed = current_time - self.last_request_time
+        if elapsed < self.min_request_interval:
+            wait_time = self.min_request_interval - elapsed
+            time.sleep(wait_time)
+        
+        self.last_request_time = time.time()
+        self.request_count += 1
 
     def _make_request(self, method, url, data=None, is_graphql=False, headers=None, files=None):
+        # Rate limit koruması
+        self._rate_limit_wait()
+        
         req_headers = headers if headers is not None else self.headers
         try:
             if not is_graphql and not url.startswith('http'):
                  url = f"{self.store_url}/admin/api/2024-04/{url}"
-            time.sleep(0.51) # Temel bir gecikme her zaman iyidir.
+            
             response = requests.request(method, url, headers=req_headers, 
                                         json=data if isinstance(data, dict) else None, 
                                         data=data if isinstance(data, bytes) else None,
@@ -39,9 +77,6 @@ class ShopifyAPI:
         except requests.exceptions.RequestException as e:
             error_content = e.response.text if e.response else "No response"
             logging.error(f"Shopify API Bağlantı Hatası ({url}): {e} - Response: {error_content}")
-            # --- DÜZELTME BURADA ---
-            # Orijinal hatayı fırlatıyoruz ki, bu hatayı çağıran fonksiyon (price_sync.py'deki)
-            # hatanın tipini (örn: 429 Too Many Requests) anlasın ve doğru aksiyonu alabilsin.
             raise e
 
     def execute_graphql(self, query, variables=None):
@@ -50,8 +85,8 @@ class ShopifyAPI:
         otomatik olarak bekleyip tekrar dener (exponential backoff).
         """
         payload = {'query': query, 'variables': variables or {}}
-        max_retries = 5
-        retry_delay = 1  # Saniye cinsinden başlangıç bekleme süresi
+        max_retries = 8  # Daha fazla deneme
+        retry_delay = 2  # Başlangıç bekleme süresi
 
         for attempt in range(max_retries):
             try:
@@ -64,8 +99,8 @@ class ShopifyAPI:
                     )
                     
                     if is_throttled and attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)
-                        logging.warning(f"Hız limitine takıldı (Throttled). {wait_time} saniye beklenip tekrar denenecek... (Deneme {attempt + 1}/{max_retries})")
+                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
+                        logging.warning(f"GraphQL Throttled! {wait_time} saniye beklenip tekrar denenecek... (Deneme {attempt + 1}/{max_retries})")
                         time.sleep(wait_time)
                         continue
                     
@@ -75,6 +110,15 @@ class ShopifyAPI:
 
                 return response_data.get("data", {})
 
+            except requests.exceptions.HTTPError as e:
+                if e.response and e.response.status_code == 429 and attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)
+                    logging.warning(f"HTTP 429 Rate Limit! {wait_time} saniye beklenip tekrar denenecek...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    logging.error(f"API bağlantı hatası: {e}")
+                    raise e
             except requests.exceptions.RequestException as e:
                  logging.error(f"API bağlantı hatası: {e}. Bu hata için tekrar deneme yapılmıyor.")
                  raise e
@@ -85,7 +129,7 @@ class ShopifyAPI:
         all_collections = []
         query = """
         query getCollections($cursor: String) {
-          collections(first: 100, after: $cursor) {
+          collections(first: 50, after: $cursor) {
             pageInfo { hasNextPage endCursor }
             edges { node { id title } }
           }
@@ -109,7 +153,7 @@ class ShopifyAPI:
         all_products = []
         query = """
         query getProductsForExport($cursor: String) {
-          products(first: 50, after: $cursor) {
+          products(first: 25, after: $cursor) {
             pageInfo { hasNextPage endCursor }
             edges {
               node {
@@ -148,10 +192,7 @@ class ShopifyAPI:
 
     def get_variant_ids_by_skus(self, skus: list, search_by_product_sku=False) -> dict:
         """
-        Verilen SKU listesine göre varyant bilgilerini (ID ve ana ürün ID) arar.
-        - search_by_product_sku=True: SKU'ları ana ürün SKU'su olarak kabul eder,
-          ilgili ürünleri bulur ve o ürünlere ait TÜM varyantları döndürür.
-        Dönen Değer: { "varyant_sku": {"variant_id": "gid://...", "product_id": "gid://..."} }
+        RATE LIMIT KORUMASIZ GELIŞTIRILMIŞ VERSİYON
         """
         if not skus: return {}
         sanitized_skus = [str(sku).strip() for sku in skus if sku]
@@ -160,8 +201,8 @@ class ShopifyAPI:
         logging.info(f"{len(sanitized_skus)} adet SKU için varyant ID'leri aranıyor (Mod: {'Ürün Bazlı' if search_by_product_sku else 'Varyant Bazlı'})...")
         sku_map = {}
         
-        # --- DEĞİŞİKLİK 1: Paket boyutunu 25'ten 10'a düşürdük ---
-        batch_size = 10 
+        # KRITIK: Batch boyutunu 2'ye düşür
+        batch_size = 2
         
         for i in range(0, len(sanitized_skus), batch_size):
             sku_chunk = sanitized_skus[i:i + batch_size]
@@ -169,14 +210,14 @@ class ShopifyAPI:
             
             query = """
             query getProductsBySku($query: String!) {
-              products(first: 25, query: $query) { # "first" değeri burada kalabilir, query zaten filtreliyor.
+              products(first: 10, query: $query) {
                 edges {
                   node {
-                    id # Ana ürün ID'si
-                    variants(first: 100) {
+                    id
+                    variants(first: 50) {
                       edges {
                         node { 
-                          id # Varyant ID'si
+                          id
                           sku 
                         }
                       }
@@ -188,6 +229,7 @@ class ShopifyAPI:
             """
 
             try:
+                logging.info(f"SKU batch {i//batch_size+1}/{len(range(0, len(sanitized_skus), batch_size))} işleniyor: {sku_chunk}")
                 result = self.execute_graphql(query, {"query": query_filter})
                 product_edges = result.get("products", {}).get("edges", [])
                 for p_edge in product_edges:
@@ -202,12 +244,15 @@ class ShopifyAPI:
                                 "product_id": product_id
                             }
                 
-                # --- DEĞİŞİKLİK 2: Her paket sonrası API'ye mola verdiriyoruz ---
-                time.sleep(1) 
+                # KRITIK: Her batch sonrası uzun bekleme
+                if i + batch_size < len(sanitized_skus):
+                    logging.info(f"Batch {i//batch_size+1} tamamlandı, rate limit için 3 saniye bekleniyor...")
+                    time.sleep(3)
             
             except Exception as e:
                 logging.error(f"SKU grubu {i//batch_size+1} için varyant ID'leri alınırken hata: {e}")
-                # Hata durumunda döngüden çıkıp işlemi durdurmak daha güvenli olabilir.
+                # Hata durumunda da biraz bekle
+                time.sleep(5)
                 raise e
 
         logging.info(f"Toplam {len(sku_map)} eşleşen varyant detayı bulundu.")
@@ -245,7 +290,7 @@ class ShopifyAPI:
 
     def load_all_products_for_cache(self, progress_callback=None):
         total_loaded = 0
-        endpoint = f'{self.store_url}/admin/api/2024-04/products.json?limit=250&fields=id,title,variants'
+        endpoint = f'{self.store_url}/admin/api/2024-04/products.json?limit=50&fields=id,title,variants'  # Limit düşürüldü
         
         while endpoint:
             if progress_callback: progress_callback({'message': f"Shopify ürünleri önbelleğe alınıyor... {total_loaded} ürün bulundu."})
@@ -263,6 +308,9 @@ class ShopifyAPI:
             total_loaded += len(products)
             link_header = response.headers.get('Link', '')
             endpoint = next((link['url'] for link in requests.utils.parse_header_links(link_header) if link.get('rel') == 'next'), None)
+            
+            # REST API için de rate limit koruması
+            time.sleep(1)
         
         logging.info(f"Shopify'dan toplam {total_loaded} ürün önbelleğe alındı.")
         return total_loaded

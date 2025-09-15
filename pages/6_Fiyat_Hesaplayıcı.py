@@ -41,6 +41,17 @@ class RateLimiter:
                 time.sleep(self.min_interval - elapsed)
             self.last_request_time = time.time()
 
+# Threading ayarlarını güvenli hale getirin
+def get_safe_thread_settings():
+    """Rate limit güvenli thread ayarları"""
+    return {
+        'worker_count': 5,  # Maksimum 5 paralel worker
+        'rate_limiter': RateLimiter(requests_per_second=0.5),  # Saniyede 0.5 istek
+        'batch_size': 100,  # Batch boyutu önemli değil, worker sayısı önemli
+        'retry_count': 5,  # Daha fazla retry
+        'base_delay': 3  # İstekler arası minimum 3 saniye
+    }
+
 # --- Sayfa Kurulumu ve Kontroller ---
 def load_css():
     try:
@@ -48,6 +59,7 @@ def load_css():
             st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
     except FileNotFoundError:
         pass
+    
 
 # YENİ: Oturum durumu için başlangıç değerlerini ayarlayan fonksiyon
 def initialize_session_state_defaults():
@@ -215,9 +227,18 @@ def _run_price_sync(
     update_choice, worker_count, queue, **kwargs
 ):
     """
-    DÜZELTME: Ana sync fonksiyonu - import hatası düzeltildi
+    DÜZELTME: Ana sync fonksiyonu - rate limit korumalı
     """
     try:
+        # Güvenli ayarları al
+        safe_settings = get_safe_thread_settings()
+        
+        # Parametre güvenlik kontrolü
+        actual_worker_count = min(worker_count, safe_settings['worker_count'])
+        actual_rate = safe_settings['requests_per_second']
+        
+        logging.info(f"Rate limit koruması aktif: {actual_worker_count} worker, {actual_rate} req/sec")
+        
         # Düzeltilmiş import - pandas'ı import edelim
         import pandas as pd
         
@@ -242,9 +263,10 @@ def _run_price_sync(
         processed_products, success_count, failed_count = 0, 0, 0
         failed_details = []  # Başarısız ürünlerin detaylarını sakla
         
-        rate_limiter = RateLimiter(requests_per_second=2.0)
+        # Güvenli rate limiter
+        rate_limiter = RateLimiter(requests_per_second=actual_rate)
         
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        with ThreadPoolExecutor(max_workers=actual_worker_count) as executor:
             # DÜZELTME: Updated function import - doğru parametrelerle çağır
             from operations.price_sync import _process_one_product_for_price_sync
             
@@ -500,39 +522,49 @@ if st.session_state.calculated_df is not None:
     with col2:
         with st.expander("⚙️ Güncelleme Ayarları", expanded=False):
             col_a, col_b = st.columns(2)
-            
-            with col_a:
-                worker_count = st.slider(
-                    "🔧 Paralel Worker Sayısı",
-                    min_value=1,
-                    max_value=15,
-                    value=5,
-                    help="Daha fazla worker = daha hızlı güncelleme. Ancak çok fazla worker rate limit'e takılabilir."
-                )
-                
-                batch_size = st.number_input(
-                    "📦 Batch Boyutu",
-                    min_value=100,
-                    max_value=10000,
-                    value=1000,
-                    step=100,
-                    help="Tek seferde kaç varyant güncellensin?"
-                )
-            
-            with col_b:
-                retry_count = st.number_input(
-                    "🔄 Tekrar Deneme Sayısı",
-                    min_value=1,
-                    max_value=5,
-                    value=3,
-                    help="Hata durumunda kaç kez tekrar denensin?"
-                )
-                
-                continue_from_last = st.checkbox(
-                    "⏯️ Kaldığı yerden devam et",
-                    value=False,
-                    help="Önceki güncelleme yarıda kaldıysa, başarısız olanları tekrar dene"
-                )
+    
+            # Güvenli ayarları al
+            safe_settings = get_safe_thread_settings()
+    
+        with col_a:
+            worker_count = st.slider(
+                "🔧 Paralel Worker Sayısı",
+                min_value=1,
+                max_value=safe_settings['worker_count'],  # Maksimum güvenli değer
+                value=safe_settings['worker_count'],  # Varsayılan güvenli değer
+                help=f"Rate limit koruması için maksimum {safe_settings['worker_count']} worker önerilir"
+            )
+        
+            batch_size = st.number_input(
+                "📦 Batch Boyutu",
+                min_value=10,
+                max_value=100,
+                value=safe_settings['batch_size'],
+                step=10,
+                help="Bu ayar artık çok önemli değil, worker sayısı daha kritik"
+            )
+    
+        with col_b:
+            retry_count = st.number_input(
+                "🔄 Tekrar Deneme Sayısı",
+                min_value=3,
+                max_value=safe_settings['retry_count'],
+                value=safe_settings['retry_count'],
+                help="Rate limit hatalarında kaç kez tekrar denensin?"
+            )
+        
+            st.info(f"""
+            **Rate Limit Koruması Aktif**
+            - Saniyede {safe_settings['requests_per_second']} istek
+            - İstekler arası {safe_settings['base_delay']}s minimum bekleme
+            - Bu ayarlar Shopify limitlerini aşmaz
+            """)
+        
+            continue_from_last = st.checkbox(
+                "⏯️ Kaldığı yerden devam et",
+                value=False,
+                help="Önceki güncelleme yarıda kaldıysa, başarısız olanları tekrar dene"
+            )
         
         update_choice = st.selectbox("Hangi Fiyat Listesini Göndermek İstersiniz?", ["Ana Fiyatlar", "İndirimli Fiyatlar"])
         
