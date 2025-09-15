@@ -1,9 +1,10 @@
-# connectors/sentos_api.py
+# connectors/sentos_api.py - Eski çalışan koddan uyarlanmış
 
 import requests
 import time
 import logging
 import re
+import json
 from urllib.parse import urljoin, urlparse
 from requests.auth import HTTPBasicAuth
 
@@ -92,23 +93,45 @@ class SentosAPI:
         return all_products
 
     def get_ordered_image_urls(self, product_id):
+        """
+        ESKİ KODDAN ALINMIŞ ÇALIŞAN VERSİYON
+        Cookie eksikse None döner (bu kritik!)
+        """
         if not self.api_cookie:
             logging.warning(f"Sentos Cookie ayarlanmadığı için sıralı resimler alınamıyor (Ürün ID: {product_id}).")
-            return None
+            return None  # ← Bu None dönmesi kritik!
 
         try:
             endpoint = "/urun_sayfalari/include/ajax/fetch_urunresimler.php"
-            payload = {'urun': product_id, 'model': '0', 'renk': '0', 'order[0][column]': '0', 'order[0][dir]': 'desc'}
-            response = self._make_request("POST", endpoint, auth_type='cookie', data=payload, is_internal_call=True).json()
+            payload = {
+                'draw': '1', 'start': '0', 'length': '100',
+                'search[value]': '', 'search[regex]': 'false',
+                'urun': product_id, 'model': '0', 'renk': '0',
+                'order[0][column]': '0', 'order[0][dir]': 'desc'
+            }
+
+            logging.info(f"Ürün ID {product_id} için sıralı resimler çekiliyor...")
+            response = self._make_request("POST", endpoint, auth_type='cookie', data=payload, is_internal_call=True)
+            response_json = response.json()
+
             ordered_urls = []
-            for item in response.get('data', []):
-                if len(item) > 2 and (match := re.search(r'href="(https?://[^"]+/o_[^"]+)"', item[2])):
-                    ordered_urls.append(match.group(1))
+            for item in response_json.get('data', []):
+                if len(item) > 2:
+                    html_string = item[2]
+                    # Orijinal regex pattern'i kullan
+                    match = re.search(r'href="(https?://[^"]+/o_[^"]+)"', html_string)
+                    if match:
+                        ordered_urls.append(match.group(1))
+
             logging.info(f"Ürün ID {product_id} için {len(ordered_urls)} adet sıralı resim URL'si bulundu.")
             return ordered_urls
+            
+        except ValueError as ve:
+            logging.error(f"Resim sırası alınamadı: {ve}")
+            return None
         except Exception as e:
             logging.error(f"Sıralı resimler çekilirken hata oluştu (Ürün ID: {product_id}): {e}")
-            return []
+            return []  # Hata durumunda boş liste döner
 
     def get_product_by_sku(self, sku):
         """Verilen SKU'ya göre Sentos'tan tek bir ürün çeker."""
@@ -127,3 +150,70 @@ class SentosAPI:
         except Exception as e:
             logging.error(f"Sentos'ta SKU '{sku}' aranırken hata: {e}")
             raise
+
+    def test_connection(self):
+        try:
+            response = self._make_request("GET", "/products?page=1&size=1").json()
+            return {'success': True, 'total_products': response.get('total_elements', 0), 'message': 'REST API OK'}
+        except Exception as e:
+            return {'success': False, 'message': f'REST API failed: {e}'}
+
+    def test_image_fetch_debug(self, product_id):
+        """Debug amaçlı görsel çekme testi"""
+        result = {
+            "product_id": product_id,
+            "cookie_available": bool(self.api_cookie),
+            "cookie_length": len(self.api_cookie) if self.api_cookie else 0,
+            "success": False,
+            "images_found": [],
+            "error": None
+        }
+        
+        if not self.api_cookie:
+            result["error"] = "Cookie mevcut değil"
+            return result
+        
+        try:
+            # Cookie preview (güvenlik için sadece başını göster)
+            if self.api_cookie:
+                logging.info(f"Cookie preview: {self.api_cookie[:50]}...")
+            
+            endpoint = "/urun_sayfalari/include/ajax/fetch_urunresimler.php"
+            payload = {
+                'draw': '1', 'start': '0', 'length': '100',
+                'search[value]': '', 'search[regex]': 'false',
+                'urun': product_id, 'model': '0', 'renk': '0',
+                'order[0][column]': '0', 'order[0][dir]': 'desc'
+            }
+
+            logging.info(f"Test: Endpoint {endpoint} için request gönderiliyor...")
+            logging.info(f"Test: Payload: {payload}")
+            
+            response = self._make_request("POST", endpoint, auth_type='cookie', data=payload, is_internal_call=True)
+            
+            logging.info(f"Test: Response status: {response.status_code}")
+            logging.info(f"Test: Response content (ilk 200 char): {response.text[:200]}")
+            
+            response_json = response.json()
+            logging.info(f"Test: JSON parse başarılı, data count: {len(response_json.get('data', []))}")
+
+            ordered_urls = []
+            for i, item in enumerate(response_json.get('data', [])):
+                if len(item) > 2:
+                    html_string = item[2]
+                    logging.info(f"Test: Item {i} HTML: {html_string[:100]}...")
+                    match = re.search(r'href="(https?://[^"]+/o_[^"]+)"', html_string)
+                    if match:
+                        url = match.group(1)
+                        ordered_urls.append(url)
+                        logging.info(f"Test: URL bulundu: {url}")
+
+            result["success"] = True
+            result["images_found"] = ordered_urls
+            logging.info(f"Test: Toplam {len(ordered_urls)} görsel URL'si bulundu")
+            
+        except Exception as e:
+            result["error"] = str(e)
+            logging.error(f"Test: Hata oluştu: {e}")
+        
+        return result
