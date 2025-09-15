@@ -1,43 +1,63 @@
-# .github/workflows/weekly_image_sync.yml
+# .github/workflows/weekly_image_sync.yml (Güvenlik Artırılmış)
 
 name: Weekly Image and SEO Alt-Text Sync
 
 on:
-  # Her Pazar sabaha karşı 03:00'te çalıştır (UTC)
-  schedule:
-    - cron: '0 3 * * 0'
-  
-  # Manuel olarak da çalıştırabilmek için butonu etkinleştir
+  # Manuel tetikleme - otomatik çalışmasın
   workflow_dispatch:
+    inputs:
+      sync_mode:
+        description: 'Senkronizasyon modu'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+        - test  # İlk 5 ürün
+        - limited  # İlk 50 ürün  
+        - full  # Tüm ürünler
+      force_update:
+        description: 'Cookie olmasa bile güncelleme yap'
+        required: false
+        default: false
+        type: boolean
+
+  # Zamanlanmış çalışma sadece test modunda
+  schedule:
+    - cron: '0 3 * * 0'  # Her Pazar 03:00 UTC
 
 jobs:
   sync-images:
     runs-on: ubuntu-latest
     steps:
-      # 1. Adım: Proje kodlarını sanal makineye indir
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Adım: Python 3.11'i kur
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 3. Adım: Gerekli Python kütüphanelerini kur
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # 4. Adım: Resim senkronizasyon script'ini çalıştır
-      - name: Run image sync with SEO alt text
+      - name: Run safe image sync
         env:
-          # Bu kısım, GitHub Secrets'tan ayarları okur
           SHOPIFY_STORE: ${{ secrets.SHOPIFY_STORE }}
           SHOPIFY_TOKEN: ${{ secrets.SHOPIFY_TOKEN }}
           SENTOS_API_URL: ${{ secrets.SENTOS_API_URL }}
           SENTOS_API_KEY: ${{ secrets.SENTOS_API_KEY }}
           SENTOS_API_SECRET: ${{ secrets.SENTOS_API_SECRET }}
           SENTOS_COOKIE: ${{ secrets.SENTOS_COOKIE }}
-          # YENİ: Bu workflow sadece resimleri ve SEO alt metinlerini günceller.
-          SYNC_MODE: "SEO Alt Metinli Resimler"
-        run: python run_scheduled_sync.py
+          # Güvenlik için sınırlı mod
+          SYNC_MODE: ${{ github.event.inputs.sync_mode || 'test' }}
+          FORCE_UPDATE: ${{ github.event.inputs.force_update || 'false' }}
+          MAX_PRODUCTS: ${{ github.event.inputs.sync_mode == 'test' && '5' || github.event.inputs.sync_mode == 'limited' && '50' || '999999' }}
+        run: python run_safe_media_sync.py
+
+      # Sonuçları logla
+      - name: Upload sync results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-results
+          path: sync_results.log

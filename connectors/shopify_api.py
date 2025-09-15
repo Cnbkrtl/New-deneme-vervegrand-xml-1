@@ -39,7 +39,10 @@ class ShopifyAPI:
         except requests.exceptions.RequestException as e:
             error_content = e.response.text if e.response else "No response"
             logging.error(f"Shopify API Bağlantı Hatası ({url}): {e} - Response: {error_content}")
-            raise Exception(f"API Hatası: {e} - {error_content}")
+            # --- DÜZELTME BURADA ---
+            # Orijinal hatayı fırlatıyoruz ki, bu hatayı çağıran fonksiyon (price_sync.py'deki)
+            # hatanın tipini (örn: 429 Too Many Requests) anlasın ve doğru aksiyonu alabilsin.
+            raise e
 
     def execute_graphql(self, query, variables=None):
         """
@@ -55,19 +58,17 @@ class ShopifyAPI:
                 response_data = self._make_request('POST', self.graphql_url, data=payload, is_graphql=True)
                 
                 if "errors" in response_data:
-                    # Hatanın Throttled olup olmadığını kontrol et
                     is_throttled = any(
                         err.get('extensions', {}).get('code') == 'THROTTLED' 
                         for err in response_data["errors"]
                     )
                     
                     if is_throttled and attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt) # Giderek artan bekleme süresi (1, 2, 4, 8 saniye)
+                        wait_time = retry_delay * (2 ** attempt)
                         logging.warning(f"Hız limitine takıldı (Throttled). {wait_time} saniye beklenip tekrar denenecek... (Deneme {attempt + 1}/{max_retries})")
                         time.sleep(wait_time)
-                        continue # Döngünün başına dön ve tekrar dene
+                        continue
                     
-                    # Eğer Throttled değilse veya son deneme ise hatayı yükselt
                     error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in response_data["errors"]]
                     logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(response_data['errors'], indent=2)}")
                     raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
@@ -75,9 +76,8 @@ class ShopifyAPI:
                 return response_data.get("data", {})
 
             except requests.exceptions.RequestException as e:
-                 # Bağlantı hataları için tekrar deneme mantığı da eklenebilir
                  logging.error(f"API bağlantı hatası: {e}. Bu hata için tekrar deneme yapılmıyor.")
-                 raise e # Bağlantı hatasını direkt yükselt
+                 raise e
         
         raise Exception(f"API isteği {max_retries} denemenin ardından başarısız oldu.")
 
@@ -146,38 +146,71 @@ class ShopifyAPI:
         logging.info(f"Export için toplam {len(all_products)} ürün çekildi.")
         return all_products
 
-    def get_variant_ids_by_skus(self, skus: list) -> dict:
+    def get_variant_ids_by_skus(self, skus: list, search_by_product_sku=False) -> dict:
+        """
+        Verilen SKU listesine göre varyant bilgilerini (ID ve ana ürün ID) arar.
+        - search_by_product_sku=True: SKU'ları ana ürün SKU'su olarak kabul eder,
+          ilgili ürünleri bulur ve o ürünlere ait TÜM varyantları döndürür.
+        Dönen Değer: { "varyant_sku": {"variant_id": "gid://...", "product_id": "gid://..."} }
+        """
         if not skus: return {}
         sanitized_skus = [str(sku).strip() for sku in skus if sku]
         if not sanitized_skus: return {}
-        logging.info(f"{len(sanitized_skus)} adet SKU için varyant ID'leri aranıyor...")
+        
+        logging.info(f"{len(sanitized_skus)} adet SKU için varyant ID'leri aranıyor (Mod: {'Ürün Bazlı' if search_by_product_sku else 'Varyant Bazlı'})...")
         sku_map = {}
-        for i in range(0, len(sanitized_skus), 50):
-            sku_chunk = sanitized_skus[i:i + 50]
+        
+        # --- DEĞİŞİKLİK 1: Paket boyutunu 25'ten 10'a düşürdük ---
+        batch_size = 10 
+        
+        for i in range(0, len(sanitized_skus), batch_size):
+            sku_chunk = sanitized_skus[i:i + batch_size]
             query_filter = " OR ".join([f"sku:{json.dumps(sku)}" for sku in sku_chunk])
+            
             query = """
-            query getVariantIdsBySku($query: String!) {
-              productVariants(first: 250, query: $query) {
-                edges { node { id sku } }
+            query getProductsBySku($query: String!) {
+              products(first: 25, query: $query) { # "first" değeri burada kalabilir, query zaten filtreliyor.
+                edges {
+                  node {
+                    id # Ana ürün ID'si
+                    variants(first: 100) {
+                      edges {
+                        node { 
+                          id # Varyant ID'si
+                          sku 
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
             """
+
             try:
                 result = self.execute_graphql(query, {"query": query_filter})
-                variants = result.get("productVariants", {}).get("edges", [])
-                for edge in variants:
-                    node = edge.get("node", {})
-                    if node.get("sku") and node.get("id"):
-                        sku_map[node["sku"]] = node["id"]
+                product_edges = result.get("products", {}).get("edges", [])
+                for p_edge in product_edges:
+                    product_node = p_edge.get("node", {})
+                    product_id = product_node.get("id")
+                    variant_edges = product_node.get("variants", {}).get("edges", [])
+                    for v_edge in variant_edges:
+                        node = v_edge.get("node", {})
+                        if node.get("sku") and node.get("id") and product_id:
+                            sku_map[node["sku"]] = {
+                                "variant_id": node["id"],
+                                "product_id": product_id
+                            }
+                
+                # --- DEĞİŞİKLİK 2: Her paket sonrası API'ye mola verdiriyoruz ---
+                time.sleep(1) 
+            
             except Exception as e:
-                logging.error(f"SKU grubu {i//50+1} için varyant ID'leri alınırken hata: {e}")
-        found_skus = set(sku_map.keys())
-        all_skus_set = set(sanitized_skus)
-        not_found_skus = all_skus_set - found_skus
-        if not_found_skus:
-            logging.warning(f"Shopify'da bulunamayan {len(not_found_skus)} adet SKU tespit edildi.")
-            logging.warning(f"Bulunamayan SKU'lar (ilk 10): {list(not_found_skus)[:10]}")
-        logging.info(f"Toplam {len(sku_map)} eşleşen varyant ID'si bulundu.")
+                logging.error(f"SKU grubu {i//batch_size+1} için varyant ID'leri alınırken hata: {e}")
+                # Hata durumunda döngüden çıkıp işlemi durdurmak daha güvenli olabilir.
+                raise e
+
+        logging.info(f"Toplam {len(sku_map)} eşleşen varyant detayı bulundu.")
         return sku_map
 
     def get_product_media_details(self, product_gid):

@@ -94,21 +94,30 @@ def load_pricing_data_from_gsheets():
         
         st.info(f"'{SPREADSHEET_NAME}' e-tablosundan veriler okunuyor...")
         
-        # Ana fiyat verilerini yükle
         data_main = ws_main.get_all_records()
         df_main = pd.DataFrame(data_main) if data_main else pd.DataFrame()
         
-        # Varyant verilerini yükle
         data_variants = ws_variants.get_all_records()
         df_variants = pd.DataFrame(data_variants) if data_variants else pd.DataFrame()
+
+        # --- YENİ EKLENEN KISIM BURASI ---
+        # Veri tipi tutarsızlığını ve Arrow hatasını kalıcı olarak çözmek için
+        # MODEL KODU ve base_sku sütunlarının veri tipini metin (string) olarak zorunlu kılıyoruz.
+        if not df_main.empty and 'MODEL KODU' in df_main.columns:
+            df_main['MODEL KODU'] = df_main['MODEL KODU'].astype(str)
         
+        if not df_variants.empty and 'MODEL KODU' in df_variants.columns:
+            df_variants['MODEL KODU'] = df_variants['MODEL KODU'].astype(str)
+            if 'base_sku' in df_variants.columns:
+                df_variants['base_sku'] = df_variants['base_sku'].astype(str)
+        # --- YENİ KISIM BİTİŞ ---
+
         # Sayısal olması gereken sütunları sayısal yap
         numeric_cols = ['ALIŞ FİYATI', 'SATIS_FIYATI_KDVSIZ', 'NIHAI_SATIS_FIYATI', 'KÂR', 'KÂR ORANI (%)']
         for col in numeric_cols:
             if col in df_main.columns:
                 df_main[col] = pd.to_numeric(df_main[col], errors='coerce')
         
-        # İki DataFrame'i birden döndür
         return df_main, df_variants
         
     except gspread.exceptions.SpreadsheetNotFound:
