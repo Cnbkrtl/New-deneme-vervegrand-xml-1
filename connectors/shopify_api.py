@@ -25,10 +25,10 @@ class ShopifyAPI:
         
         # Rate limiting için
         self.last_request_time = 0
-        self.min_request_interval = 0.6  # 600ms minimum bekleme
+        self.min_request_interval = 1.5  # 600ms minimum bekleme
         self.request_count = 0
         self.window_start = time.time()
-        self.max_requests_per_minute = 40  # Dakikada max 40 istek
+        self.max_requests_per_minute = 20  # Dakikada max 20 istek
 
     def _rate_limit_wait(self):
         """Rate limit koruması - her API çağrısından önce çağrılır"""

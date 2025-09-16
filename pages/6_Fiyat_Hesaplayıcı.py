@@ -737,8 +737,12 @@ if st.session_state.sync_results:
                     st.bar_chart(error_summary)
                     
                     st.markdown("#### Başarısız Varyantlar")
+                    available_columns = ['sku', 'reason']
+                    if 'price' in failed_df.columns:
+                        available_columns.insert(1, 'price')
+
                     st.dataframe(
-                        failed_df[['sku', 'price', 'reason']].head(200), 
+                        failed_df[available_columns].head(200), 
                         use_container_width=True, 
                         hide_index=True
                     )

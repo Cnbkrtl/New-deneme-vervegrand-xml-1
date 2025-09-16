@@ -192,7 +192,7 @@ else:
     )
     col1, col2 = st.columns(2)
     test_mode = col1.checkbox("Test Modu (İlk 20 ürünü senkronize et)", value=True, help="Tam bir senkronizasyon çalıştırmadan bağlantıyı ve mantığı test etmek için yalnızca Sentos'taki ilk 20 ürünü işler.")
-    max_workers = col2.number_input("Eş Zamanlı Çalışan Sayısı", 1, 50, 5, help="Aynı anda işlenecek ürün sayısı. API limitlerine takılmamak için dikkatli artırın.")
+    max_workers = col2.number_input("Eş Zamanlı Çalışan Sayısı", 1, 50, 2, help="Aynı anda işlenecek ürün sayısı. API limitlerine takılmamak için dikkatli artırın.")
 
     if st.button("🚀 Genel Senkronizasyonu Başlat", type="primary", use_container_width=True, disabled=not sync_ready):
         st.session_state.sync_running = True
