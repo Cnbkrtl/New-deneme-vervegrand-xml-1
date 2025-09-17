@@ -25,10 +25,12 @@ class ShopifyAPI:
         
         # Rate limiting için
         self.last_request_time = 0
-        self.min_request_interval = 1.5  # 600ms minimum bekleme
+        self.min_request_interval = 0.25  # 600ms minimum bekleme
         self.request_count = 0
         self.window_start = time.time()
-        self.max_requests_per_minute = 20  # Dakikada max 20 istek
+        self.max_requests_per_minute = 80  # Dakikada max 20 istek
+        self.consecutive_throttles = 0
+        self.adaptive_delay = 0.25
 
     def _rate_limit_wait(self):
         """Rate limit koruması - her API çağrısından önce çağrılır"""
@@ -38,6 +40,9 @@ class ShopifyAPI:
         if current_time - self.window_start >= 60:
             self.request_count = 0
             self.window_start = current_time
+
+            if self.consecutive_throttles > 0:
+                self.consecutive_throttles = max(0, self.consecutive_throttles - 1)
         
         # Dakikalık limit kontrolü
         if self.request_count >= self.max_requests_per_minute:
@@ -53,6 +58,13 @@ class ShopifyAPI:
         if elapsed < self.min_request_interval:
             wait_time = self.min_request_interval - elapsed
             time.sleep(wait_time)
+
+        current_delay = self.adaptive_delay * (1 + self.consecutive_throttles * 0.5)
+
+        elapsed = current_time - self.last_request_time
+        if elapsed < current_delay:
+            wait_time = current_delay - elapsed
+            time.sleep(wait_time)    
         
         self.last_request_time = time.time()
         self.request_count += 1
@@ -85,8 +97,8 @@ class ShopifyAPI:
         otomatik olarak bekleyip tekrar dener (exponential backoff).
         """
         payload = {'query': query, 'variables': variables or {}}
-        max_retries = 8  # Daha fazla deneme
-        retry_delay = 2  # Başlangıç bekleme süresi
+        max_retries = 6  # Daha fazla deneme
+        retry_delay = 1  # Başlangıç bekleme süresi
 
         for attempt in range(max_retries):
             try:
@@ -99,14 +111,23 @@ class ShopifyAPI:
                     )
                     
                     if is_throttled and attempt < max_retries - 1:
-                        wait_time = retry_delay * (2 ** attempt)  # Exponential backoff
-                        logging.warning(f"GraphQL Throttled! {wait_time} saniye beklenip tekrar denenecek... (Deneme {attempt + 1}/{max_retries})")
+                        # Throttle algılandı, adaptif delay'i artır
+                        self.consecutive_throttles += 1
+                        self.adaptive_delay = min(2.0, self.adaptive_delay * 1.5)  # Max 2 saniye
+                        
+                        wait_time = 1.0 * (1.5 ** attempt)  # Daha hızlı exponential backoff
+                        logging.warning(f"GraphQL Throttled! {wait_time:.1f}s bekleniyor... (Deneme {attempt + 1}/{max_retries})")
                         time.sleep(wait_time)
                         continue
                     
                     error_messages = [err.get('message', 'Bilinmeyen GraphQL hatası') for err in response_data["errors"]]
                     logging.error(f"GraphQL sorgusu hata verdi: {json.dumps(response_data['errors'], indent=2)}")
                     raise Exception(f"GraphQL Error: {', '.join(error_messages)}")
+                
+                # Başarılı istek, throttle count'u azalt
+                if self.consecutive_throttles > 0:
+                    self.consecutive_throttles = max(0, self.consecutive_throttles - 1)
+                    self.adaptive_delay = max(0.25, self.adaptive_delay * 0.9)
 
                 return response_data.get("data", {})
 
