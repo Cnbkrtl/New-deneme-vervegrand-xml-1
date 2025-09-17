@@ -25,10 +25,10 @@ class ShopifyAPI:
         
         # Rate limiting için
         self.last_request_time = 0
-        self.min_request_interval = 0.25  # 600ms minimum bekleme
+        self.min_request_interval = 0.2  # 600ms minimum bekleme
         self.request_count = 0
         self.window_start = time.time()
-        self.max_requests_per_minute = 80  # Dakikada max 20 istek
+        self.max_requests_per_minute = 120  # Dakikada max 20 istek
         self.consecutive_throttles = 0
         self.adaptive_delay = 0.25
 
@@ -222,8 +222,8 @@ class ShopifyAPI:
         logging.info(f"{len(sanitized_skus)} adet SKU için varyant ID'leri aranıyor (Mod: {'Ürün Bazlı' if search_by_product_sku else 'Varyant Bazlı'})...")
         sku_map = {}
         
-        # KRITIK: Batch boyutunu 2'ye düşür
-        batch_size = 2
+        # KRITIK: Batch boyutunu 5'ye düşür
+        batch_size = 5
         
         for i in range(0, len(sanitized_skus), batch_size):
             sku_chunk = sanitized_skus[i:i + batch_size]
@@ -268,12 +268,12 @@ class ShopifyAPI:
                 # KRITIK: Her batch sonrası uzun bekleme
                 if i + batch_size < len(sanitized_skus):
                     logging.info(f"Batch {i//batch_size+1} tamamlandı, rate limit için 3 saniye bekleniyor...")
-                    time.sleep(3)
+                    time.sleep(1.5)
             
             except Exception as e:
                 logging.error(f"SKU grubu {i//batch_size+1} için varyant ID'leri alınırken hata: {e}")
                 # Hata durumunda da biraz bekle
-                time.sleep(5)
+                time.sleep(3)
                 raise e
 
         logging.info(f"Toplam {len(sku_map)} eşleşen varyant detayı bulundu.")

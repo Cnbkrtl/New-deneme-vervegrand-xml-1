@@ -122,12 +122,12 @@ def _process_one_product_for_price_sync(shopify_api, product_base_sku, all_varia
         
         # Sonucu detaylandır
         if result.get('status') == 'success':
-            logging.info(f"✅ Ürün {product_base_sku} başarıyla güncellendi - {len(updates)} varyant")
-        else:
-            logging.error(f"❌ Ürün {product_base_sku} güncellenemedi: {result.get('reason')}")
+            rate_limiter.on_success()  # Başarı durumunda hızlan
+        elif "throttled" in result.get('reason', '').lower():
+            rate_limiter.on_throttle()  # Throttle durumunda yavaşla
             
         return result
-
     except Exception as e:
-        logging.error(f"❌ Ürün {product_base_sku} işlenirken hata: {str(e)}")
+        if "throttled" in str(e).lower():
+            rate_limiter.on_throttle()
         return {"status": "failed", "reason": str(e)}
